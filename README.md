@@ -70,7 +70,7 @@ completed transition.
 | 7 | Red and Purple Teams | done |
 | 8 | Gold Team standards and architecture | done |
 | 9 | Green Team release operations | done |
-| 10 | Integration and adversarial validation | planned |
+| 10 | Integration and adversarial validation | done |
 
 ## Repository layout
 
@@ -89,6 +89,7 @@ tests/
   test_phase3_observer_blue.py
   test_phase4_black_team.py
   test_phase9_green_team.py
+  test_phase10_integration.py
   test_phase5_silver_team.py
   test_phase6_yellow_team.py
   test_phase7_red_purple.py
