@@ -16,6 +16,8 @@ from .black import Diagnosis, Experiment, Hypothesis
 from .eventlog import Event
 from .ledger import EvidenceLedger, EvidenceRecord
 from .observer import FORBIDDEN_INTERPRETATION_KEYS, Observation
+from .purple import Closure
+from .red import Finding
 from .registry import APPROVER_ROLES, TeamRegistry
 from .risk import RiskClass, is_higher, normalize
 from .scope import ScopeOutOfBoundsError, validate_scope
@@ -883,7 +885,7 @@ class WhiteTeam:
     def record_yellow_output(
         self,
         task_id: str,
-        results: tuple[VerificationResult, ...],
+        results: tuple[TestResult, ...],
         *,
         actor: str = "white.sys-1",
         team: str = "white",
@@ -908,6 +910,76 @@ class WhiteTeam:
                     },
                     task_id=task_id,
                     refs=(result.artifacts_ref,),
+                )
+            )
+        return records
+
+    def record_red_output(
+        self,
+        task_id: str,
+        findings: tuple[Finding, ...],
+        *,
+        actor: str = "white.sys-1",
+        team: str = "white",
+    ) -> list[EvidenceRecord]:
+        """Record red-team findings as `finding` evidence."""
+        records: list[EvidenceRecord] = []
+        for finding in findings:
+            records.append(
+                self.ledger.append(
+                    "finding",
+                    actor=actor,
+                    team=team,
+                    source=f"red://Finding/{finding.finding_id}",
+                    payload={
+                        "finding_id": finding.finding_id,
+                        "title": finding.title,
+                        "reproduction": list(finding.reproduction),
+                        "impact": finding.impact,
+                        "severity": finding.severity,
+                        "remediation_recommendation": (
+                            finding.remediation_recommendation
+                        ),
+                        "targets": list(finding.targets),
+                        "techniques": list(finding.techniques),
+                        "destructive": finding.destructive,
+                        "approval_refs": list(finding.approval_refs),
+                    },
+                    task_id=task_id,
+                    refs=finding.approval_refs,
+                )
+            )
+        return records
+
+    def record_purple_output(
+        self,
+        task_id: str,
+        closures: tuple[Closure, ...],
+        *,
+        actor: str = "white.sys-1",
+        team: str = "white",
+    ) -> list[EvidenceRecord]:
+        """Record purple-team closure verdicts as `remediation` evidence."""
+        records: list[EvidenceRecord] = []
+        for closure in closures:
+            records.append(
+                self.ledger.append(
+                    "remediation",
+                    actor=actor,
+                    team=team,
+                    source=f"purple://Closure/{closure.closure_id}",
+                    payload={
+                        "closure_id": closure.closure_id,
+                        "finding_ref": closure.finding_ref,
+                        "controls": list(closure.controls),
+                        "re_test_refs": list(closure.re_test_refs),
+                        "change_ref": closure.finding_ref,
+                        "re_test_ref": "|".join(closure.re_test_refs),
+                        "verdict": closure.verdict,
+                        "notes": closure.notes,
+                    },
+                    task_id=task_id,
+                    refs=(closure.finding_ref, *closure.re_test_refs),
                 )
             )
         return records

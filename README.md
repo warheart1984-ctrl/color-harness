@@ -67,9 +67,7 @@ completed transition.
 | 4 | Black Team diagnostics | done |
 | 5 | Silver Team implementation | done |
 | 6 | Yellow Team verification | done |
-| 5 | Silver Team implementation | planned |
-| 6 | Yellow Team verification | planned |
-| 7 | Red and Purple Teams | planned |
+| 7 | Red and Purple Teams | done |
 | 8 | Gold Team standards and architecture | planned |
 | 9 | Green Team release operations | planned |
 | 10 | Integration and adversarial validation | planned |
@@ -92,6 +90,7 @@ tests/
   test_phase4_black_team.py
   test_phase5_silver_team.py
   test_phase6_yellow_team.py
+  test_phase7_red_purple.py
 colorharness/            color-team coordinator + task state machine (Phase 1)
                          + White Team governance: scope, risk, approvals,
                          evidence ledger, audit (Phase 2)
@@ -105,6 +104,10 @@ colorharness/            color-team coordinator + task state machine (Phase 1)
                          metadata; no merge/deploy) (Phase 5)
                          + Yellow Team (independent checks; failures block
                          VERIFICATION_PASSED) (Phase 6)
+                         + Red Team (authorized adversarial testing; findings
+                         require targets and reproduction; destructive refused
+                         without approval) + Purple Team (closure validation;
+                         closure requires re-test evidence) (Phase 7)
 athp/                    RFC-0042 harness (moon_base, server, lifecycle, conformance)
 ```
 

@@ -91,6 +91,25 @@ from .yellow import (
     YellowTeamError,
     YellowUnauthorizedActorError,
 )
+from .red import (
+    FINDING_SEVERITIES,
+    Finding,
+    InvalidFindingError,
+    RedDestructiveTestRefusedError,
+    RedTeam,
+    RedTeamError,
+    RedUnauthorizedActorError,
+    RedUnspecifiedTargetError,
+)
+from .purple import (
+    CLOSURE_VERDICTS,
+    Closure,
+    InvalidClosureError,
+    PurpleNoReTestError,
+    PurpleTeam,
+    PurpleTeamError,
+    PurpleUnauthorizedActorError,
+)
 
 __all__ = [
     "Coordinator",
@@ -163,4 +182,19 @@ __all__ = [
     "SelfApprovalError",
     "VerificationResult",
     "CHECK_TYPES",
+    "RedTeam",
+    "RedTeamError",
+    "RedUnauthorizedActorError",
+    "RedUnspecifiedTargetError",
+    "RedDestructiveTestRefusedError",
+    "Finding",
+    "FINDING_SEVERITIES",
+    "InvalidFindingError",
+    "PurpleTeam",
+    "PurpleTeamError",
+    "PurpleUnauthorizedActorError",
+    "PurpleNoReTestError",
+    "Closure",
+    "CLOSURE_VERDICTS",
+    "InvalidClosureError",
 ]

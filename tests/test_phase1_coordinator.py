@@ -27,6 +27,8 @@ def make_registry() -> TeamRegistry:
     reg.register("observer.ro-1", "observer")
     reg.register("blue.obs-1", "blue", ("readonly_observe",))
     reg.register("black.diag-1", "black", ("readonly_diagnose",))
+    reg.register("red.tar-1", "red", ("readonly_test",))
+    reg.register("purple.clo-1", "purple", ("readonly_observe", "closure_validate"))
     reg.register("gold.plan-1", "gold", ("policy_write",))
     reg.register("silver.build-1", "silver", ("branch_write", "config_write"))
     reg.register("yellow.ver-1", "yellow", ("policy_check", "test"))

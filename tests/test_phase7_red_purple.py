@@ -1,0 +1,279 @@
+"""Phase 7 acceptance checks: Red Team (authorized adversarial testing —
+findings complete, unspecified/destructive refused) and Purple Team (closure
+validation — closure requires re-test evidence)."""
+
+from __future__ import annotations
+
+import pytest
+
+from colorharness import (
+    Closure,
+    Coordinator,
+    Finding,
+    InvalidClosureError,
+    InvalidFindingError,
+    PurpleNoReTestError,
+    PurpleTeam,
+    PurpleUnauthorizedActorError,
+    RedDestructiveTestRefusedError,
+    RedTeam,
+    RedUnauthorizedActorError,
+    RedUnspecifiedTargetError,
+    SilverTeam,
+    TeamRegistry,
+    WhiteTeam,
+    YellowTeam,
+)
+from tests.test_phase1_coordinator import make_registry
+
+def make_red(reg: TeamRegistry | None = None) -> RedTeam:
+    return RedTeam(registry=reg or make_registry())
+
+
+def make_purple(reg: TeamRegistry | None = None) -> PurpleTeam:
+    return PurpleTeam(registry=reg or make_registry())
+
+
+# ---------------------------------------------------------------------------
+# Red Team: findings
+# ---------------------------------------------------------------------------
+
+def test_report_finding_valid() -> None:
+    finding = make_red().report_finding(
+        task_id="task-1", actor="red.tar-1",
+        title="deploy agent leaks token",
+        reproduction=("1. run deploy", "2. observe trace"),
+        impact="token visible in trace",
+        severity="high",
+        remediation_recommendation="rotate and scope tokens",
+        targets=("deploy-agent:1.4",),
+    )
+    assert isinstance(finding, Finding)
+    assert finding.severity == "high"
+    assert finding.destructive is False
+
+
+def test_red_refuses_unspecified_targets() -> None:
+    with pytest.raises(RedUnspecifiedTargetError):
+        make_red().report_finding(
+            task_id="task-1", actor="red.tar-1",
+            title="generic", reproduction=("1. try things",),
+            impact="unknown", severity="low",
+            remediation_recommendation="none", targets=(),
+        )
+
+
+def test_red_refuses_destructive_without_approval() -> None:
+    with pytest.raises(RedDestructiveTestRefusedError):
+        make_red().report_finding(
+            task_id="task-1", actor="red.tar-1",
+            title="drop table", reproduction=("1. attempt",),
+            impact="data loss", severity="critical",
+            remediation_recommendation="backups",
+            targets=("db:staging",), destructive=True,
+        )
+
+
+def test_red_allows_destructive_with_approval_refs() -> None:
+    finding = make_red().report_finding(
+        task_id="task-1", actor="red.tar-1",
+        title="drop table", reproduction=("1. attempt",),
+        impact="data loss", severity="critical",
+        remediation_recommendation="backups",
+        targets=("db:staging",), destructive=True,
+        approval_refs=("evt-approval-1",),
+    )
+    assert finding.destructive is True
+    assert finding.approval_refs == ("evt-approval-1",)
+
+
+def test_finding_requires_complete_fields() -> None:
+    red = make_red()
+    with pytest.raises(InvalidFindingError):
+        red.report_finding(task_id="task-1", actor="red.tar-1",
+                           title="x", reproduction=(), impact="i",
+                           severity="high", remediation_recommendation="r",
+                           targets=("t",))
+    with pytest.raises(InvalidFindingError):
+        red.report_finding(task_id="task-1", actor="red.tar-1",
+                           title="x", reproduction=("1. step",),
+                           impact="", severity="high",
+                           remediation_recommendation="r", targets=("t",))
+    with pytest.raises(InvalidFindingError):
+        red.report_finding(task_id="task-1", actor="red.tar-1",
+                           title="x", reproduction=("1. step",),
+                           impact="i", severity="catastrophic",
+                           remediation_recommendation="r", targets=("t",))
+
+
+def test_red_requires_red_actor() -> None:
+    red = make_red()
+    with pytest.raises(RedUnauthorizedActorError):
+        red.report_finding(task_id="task-1", actor="blue.obs-1",
+                           title="x", reproduction=("1. step",), impact="i",
+                           severity="low", remediation_recommendation="r",
+                           targets=("t",))
+    with pytest.raises(RedUnauthorizedActorError):
+        red.report_finding(task_id="task-1", actor="ghost.1",
+                           title="x", reproduction=("1. step",), impact="i",
+                           severity="low", remediation_recommendation="r",
+                           targets=("t",))
+
+
+def test_red_caps_are_readonly() -> None:
+    from colorharness.registry import TEAM_CHARTER
+    assert not (TEAM_CHARTER["red"] & {"branch_write", "config_write", "release"})
+
+
+# ---------------------------------------------------------------------------
+# Purple Team: closure validation
+# ---------------------------------------------------------------------------
+
+def test_validate_closure_valid() -> None:
+    closure = make_purple().validate_closure(
+        task_id="task-1", actor="purple.clo-1",
+        finding_ref="find-1",
+        controls=("token scoped to service",),
+        re_test_refs=("re-test-1",),
+        verdict="closed",
+    )
+    assert isinstance(closure, Closure)
+    assert closure.verdict == "closed"
+    assert closure.re_test_refs == ("re-test-1",)
+
+
+def test_purple_refuses_closure_without_re_test() -> None:
+    with pytest.raises(PurpleNoReTestError):
+        make_purple().validate_closure(
+            task_id="task-1", actor="purple.clo-1",
+            finding_ref="find-1", controls=("c",),
+            re_test_refs=(), verdict="closed",
+        )
+
+
+def test_closure_requires_finding_and_controls() -> None:
+    purple = make_purple()
+    with pytest.raises(InvalidClosureError):
+        purple.validate_closure(task_id="task-1", actor="purple.clo-1",
+                                finding_ref="", controls=("c",),
+                                re_test_refs=("r",), verdict="closed")
+    with pytest.raises(InvalidClosureError):
+        purple.validate_closure(task_id="task-1", actor="purple.clo-1",
+                                finding_ref="find-1", controls=(),
+                                re_test_refs=("r",), verdict="closed")
+    with pytest.raises(InvalidClosureError):
+        purple.validate_closure(task_id="task-1", actor="purple.clo-1",
+                                finding_ref="find-1", controls=("c",),
+                                re_test_refs=("r",), verdict="maybe")
+
+
+def test_closure_requires_purple_actor() -> None:
+    with pytest.raises(PurpleUnauthorizedActorError):
+        make_purple().validate_closure(
+            task_id="task-1", actor="silver.build-1",
+            finding_ref="find-1", controls=("c",),
+            re_test_refs=("r",), verdict="closed",
+        )
+
+
+# ---------------------------------------------------------------------------
+# White records red/purple output as evidence
+# ---------------------------------------------------------------------------
+
+def test_white_records_finding_and_closure(tmp_path) -> None:
+    reg = make_registry()
+    gov = WhiteTeam(registry=reg, ledger_path=str(tmp_path / "l.jsonl"))
+    red = make_red(reg)
+    finding = red.report_finding(
+        task_id="task-1", actor="red.tar-1",
+        title="token leak", reproduction=("1. run", "2. observe"),
+        impact="exposure", severity="high",
+        remediation_recommendation="rotate + scope",
+        targets=("deploy-agent:1.4",),
+    )
+    purple = make_purple(reg)
+    closure = purple.validate_closure(
+        task_id="task-1", actor="purple.clo-1",
+        finding_ref=finding.finding_id,
+        controls=("token scoped",),
+        re_test_refs=("re-test-1",),
+        verdict="closed",
+    )
+
+    finding_records = gov.record_red_output("task-1", (finding,))
+    closure_records = gov.record_purple_output("task-1", (closure,))
+
+    assert finding_records[0].record_type == "finding"
+    assert finding_records[0].payload["severity"] == "high"
+    assert finding_records[0].payload["targets"] == ["deploy-agent:1.4"]
+
+    assert closure_records[0].record_type == "remediation"
+    assert closure_records[0].payload["verdict"] == "closed"
+    assert closure_records[0].payload["re_test_ref"] == "re-test-1"
+    assert closure_records[0].payload["change_ref"] == finding.finding_id
+    assert gov.ledger.verify_chain()
+    assert gov.ledger.verify_manifest()
+
+
+def test_white_refuses_unsupported_red_purple(tmp_path) -> None:
+    gov = WhiteTeam(registry=make_registry(), ledger_path=str(tmp_path / "l.jsonl"))
+    with pytest.raises(Exception):
+        gov.record_red_output("task-1", ("not-a-finding",))
+    with pytest.raises(Exception):
+        gov.record_purple_output("task-1", ("not-a-closure",))
+
+
+# ---------------------------------------------------------------------------
+# Full chain: red finding -> purple closure with re-test evidence
+# ---------------------------------------------------------------------------
+
+def test_finding_to_closure_chain(tmp_path) -> None:
+    reg = make_registry()
+    gov = WhiteTeam(registry=reg, ledger_path=str(tmp_path / "l.jsonl"))
+    red = make_red(reg)
+    purple = make_purple(reg)
+
+    finding = red.report_finding(
+        task_id="task-1", actor="red.tar-1",
+        title="dependency vuln", reproduction=("1. npm audit", "2. observe CVE"),
+        impact="remote code execution", severity="critical",
+        remediation_recommendation="pin the dependency",
+        targets=("app:prod-svc",), techniques=("dependency-scan",),
+    )
+    gov.record_red_output("task-1", (finding,))
+
+    change = SilverTeam(registry=reg).present_change(
+        task_id="task-1", actor="silver.build-1",
+        change_type="config", branch="isolated/pin-dep",
+        files=("package-lock.json",), diff_summary="pin dependency",
+        plan_refs=(finding.finding_id,),
+        rollback_metadata={"steps": ["git revert pin-dep"]},
+        configurations=("package-lock.json",),
+    )
+    gov.record_silver_output("task-1", (change,))
+
+    re_test = YellowTeam(registry=reg).run_check(
+        task_id="task-1", actor="yellow.ver-1",
+        check_type="security", command="npm audit", version="npm 10",
+        exit_status=0, artifacts_ref=change.manifest_id,
+        evidence_location="audit://report",
+    )
+    gov.record_yellow_output("task-1", (re_test,))
+
+    closure = purple.validate_closure(
+        task_id="task-1", actor="purple.clo-1",
+        finding_ref=finding.finding_id,
+        controls=(change.manifest_id,),
+        re_test_refs=(re_test.result_id,),
+        verdict="closed",
+        notes="dependency pinned and re-scanned clean",
+    )
+    gov.record_purple_output("task-1", (closure,))
+
+    kinds = {r.record_type for r in gov.ledger.records}
+    assert {"finding", "change", "test_result", "remediation"} <= kinds
+    closure_record = [r for r in gov.ledger.records if r.record_type == "remediation"][0]
+    assert closure_record.payload["re_test_ref"] == re_test.result_id
+    assert not closure_record.payload.get("secret")
+    assert gov.ledger.verify_chain()
+    assert gov.ledger.verify_manifest()

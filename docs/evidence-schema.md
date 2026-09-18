@@ -127,8 +127,12 @@ mandatory sub-details of the payload type:
   `evidence_location`. Results always record the command, the version run, and
   where the evidence lives.
 - `finding`: `reproduction[]`, `impact`, `severity`,
-  `remediation_recommendation`.
-- `remediation`: `change_ref`, `re_test_ref`, `verdict` (closed|open).
+  `remediation_recommendation`, plus the named `targets[]` tested and any
+  `techniques[]`. A finding must name its targets — Red refuses unspecified
+  targets — and a destructive test must cite `approval_refs[]`.
+- `remediation`: `change_ref`, `re_test_ref`, `verdict` (closed|open); also
+  recorded are the `controls[]` that close the finding and every `re_test_refs[]`
+  that re-verified it. A closure with no re-test evidence is refused.
 - `approval`: `approver`, `approver_role`, `approver_team`, `scope`, `expiry`,
   `gated_action`, `decision_id`, `ttl_seconds`, `issued_epoch`,
   `expires_at_epoch`. The `approver_role` (one of `ci-operator`,
