@@ -7,10 +7,13 @@ replays the event log and never duplicates a completed transition.
 """
 
 from .registry import (
+    APPROVER_ROLES,
     CapabilityNotAllowedError,
     DuplicateAgentError,
     RegistrationError,
+    RoleNotAllowedError,
     TeamRegistry,
+    UnknownRoleError,
     UnknownTeamError,
 )
 from .coordinator import Coordinator
@@ -27,12 +30,16 @@ from .governance import (
     GovernanceError,
     NoSelfApprovalError,
     RiskRegressionError,
+    RoleRequiredError,
     ScopeApprovalRequired,
     ScopeDeclaration,
     ScopeNotDeclaredError,
     WhiteTeam,
     scope_covers,
 )
+from .secrets import SecretExposureError
+from .scope import ScopeOutOfBoundsError, validate_scope
+from .watchdog import Watchdog
 
 __all__ = [
     "Coordinator",
@@ -41,6 +48,9 @@ __all__ = [
     "UnknownTeamError",
     "DuplicateAgentError",
     "CapabilityNotAllowedError",
+    "UnknownRoleError",
+    "RoleNotAllowedError",
+    "APPROVER_ROLES",
     "RiskClass",
     "EvidenceLedger",
     "EvidenceRecord",
@@ -53,7 +63,12 @@ __all__ = [
     "GovernanceError",
     "NoSelfApprovalError",
     "RiskRegressionError",
+    "RoleRequiredError",
     "ScopeApprovalRequired",
     "ScopeNotDeclaredError",
     "scope_covers",
+    "SecretExposureError",
+    "ScopeOutOfBoundsError",
+    "validate_scope",
+    "Watchdog",
 ]

@@ -29,6 +29,7 @@ def make_registry() -> TeamRegistry:
     reg.register("yellow.ver-1", "yellow", ("policy_check", "test"))
     reg.register("green.rel-1", "green", ("release_plan", "rollback_exec"))
     reg.register("white.sys-1", "white", ("ledger_write",))
+    reg.grant_role("white.sys-1", "ci-operator")
     return reg
 
 
@@ -49,10 +50,10 @@ FULL_PATH: list[tuple[Trigger, str, str]] = [
 ]
 
 
-def drive_full_path(c: Coordinator, task_id: str) -> list[str]:
+def drive_full_path(c: Coordinator, task_id: str, prefix: str = "") -> list[str]:
     request_ids = []
     for trigger, actor, reason in FULL_PATH:
-        rid = f"rid-{trigger.value}"
+        rid = f"{prefix}rid-{trigger.value}"
         c.apply_transition(
             task_id, trigger, actor=actor, reason=reason,
             evidence_refs=(f"log://{rid}",), request_id=rid,
@@ -294,7 +295,7 @@ def test_unauthorized_resolution_rejected(tmp_path) -> None:
                                 actor="silver.build-1", reason="not my call",
                                 evidence_refs=("x",), request_id="r-bad-resume")
     assert result["success"] is False
-    assert result["error"]["code"] == RejectionCode.SCOPE_INVALID.value
+    assert result["error"]["code"] == RejectionCode.AUTH_INVALID.value
 
 
 def test_rollback_reachable_and_absorbing(tmp_path) -> None:
@@ -330,7 +331,7 @@ def test_restart_restores_state_and_replays_without_duplication(tmp_path) -> Non
 
     replay = c2.apply_transition(
         task["task_id"], Trigger.SUCCESS_CONFIRMED, actor="green.rel-1",
-        reason="duplicate command", evidence_refs=("log://dup",),
+        reason="success confirmed", evidence_refs=("log://rid-SUCCESS_CONFIRMED",),
         request_id="rid-SUCCESS_CONFIRMED",
     )
     assert replay["success"] is True
@@ -349,7 +350,7 @@ def test_restart_continues_sequence_without_gap(tmp_path) -> None:
     c2 = Coordinator(registry=registry, store_path=store)
     task2 = c2.create_task(title="second", scope={})
     assert task2["task_id"] != task["task_id"]
-    drive_full_path(c2, task2["task_id"])
+    drive_full_path(c2, task2["task_id"], prefix="t2-")
 
     events_for_task2 = [e for e in c2.events() if e.task_id == task2["task_id"]]
     assert [e.seq for e in events_for_task2] == list(range(1, len(events_for_task2) + 1))

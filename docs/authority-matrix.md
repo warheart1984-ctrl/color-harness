@@ -19,7 +19,10 @@ No team has authority over application feature logic, business decisions,
 external services beyond the declared target environments, credentials that it
 was not granted, or any activity the coordinator has not routed to it.
 
-Scope expansion requires a new recorded approval (contract clause G2).
+Scope expansion requires a new recorded approval (contract clause G2). The
+mechanical allowlist is `DEVOPS_ALLOWLIST` in `colorharness/scope.py`; any
+domain outside it is refused at intake and on expansion
+(`SCOPE_OUT_OF_BOUNDS`).
 
 ## 2. Operational risk color model
 
@@ -81,12 +84,44 @@ Rules:
   ESCALATED and pauses normal progression until a decision is recorded.
 - **Expiry.** Every approval has an expiry. Expired approvals must be renewed;
   renewing re-runs the approval record, never mutates the old one.
+- **Roles over team colors.** Approvals are recorded by reviewer role
+  (`ci-operator`, `security-lead`, `platform-owner`), not by team color. An
+  approval whose approver no longer holds the recorded role is void and never
+  counts toward a gate.
+
+### Approval roles and quorum
+
+An approval is valid only if the approver holds the recorded reviewer role and
+that role has authority over the task's **current** risk tier. An approval
+clears a protected gate only when the tier's quorum is met.
+
+| Risk tier | Required role(s) | Quorum | Example approvers |
+| --- | --- | --- | --- |
+| Green | `ci-operator` | 1 approval | `ci-operator` on a read-only task |
+| Yellow | `ci-operator` | 1 approval | CI operator approving a staging change |
+| Orange | `security-lead` | 1 approval | security lead approving blast-radius-limited rollout |
+| Red | `security-lead` + `platform-owner` | 2 distinct approvers | security lead + platform owner on production release |
+
+Rules:
+
+- One approver holding two roles does **not** clear a Red gate (two distinct
+  approvers are required).
+- Approvals default to a 90-day expiry (`APPROVAL_TTL_SECONDS`).
+- A role grant can be revoked; revoking the role voids every pending approval
+  recorded under it.
+- Resolution of BLOCKED/ESCALATED (`UNBLOCK`, `DECISION_RESUME`) requires the
+  coordinator system agent or an agent holding a resolver role
+  (`security-lead`, `platform-owner`); other actors are refused with
+  `AUTH_INVALID`.
 
 ## 5. Escalation paths
 
 - Team → Coordinator: routing, transition, or blocking conflicts.
 - Coordinator → White: authority, scope, or evidence-sufficiency questions.
 - Any team → White: request to pause (evidence/authority insufficient).
+- Watchdog: escalates tasks held in BLOCKED/ESCALATED beyond the stale-block
+  window (10 minutes by default) and quarantines agents that miss the
+  heartbeat threshold (3 misses by default).
 - White/Coordinator → designated human platform owner: production, credentials,
   deletion, or irreversible actions — a human approval is required for Red-risk
   execution.

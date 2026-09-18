@@ -60,6 +60,7 @@ completed transition.
 | Phase | Deliverable | Status |
 | --- | --- | --- |
 | 0 | Repository and contract setup | done |
+| 0b | Hardening: scope allowlist, secret scanning, reviewer roles + quorum, idempotency fingerprints, watchdog, ledger manifest | done |
 | 1 | Core coordinator and state machine | done |
 | 2 | White Team governance layer | done |
 | 3 | Observer and Blue Team | planned |
@@ -78,15 +79,18 @@ README.md
 RFC-0001-color-devops-agent-team.md
 docs/
   agent-contract.md      canonical vocabulary + behavioral contract
-  evidence-schema.md     evidence record + append-only ledger
-  authority-matrix.md    scope, caps, risk colors, approval gates
+  evidence-schema.md     evidence record + append-only ledger + manifest
+  authority-matrix.md    scope, caps, risk colors, approval gates, quorum
 tests/
   test_phase0_documentation.py
+  test_phase0b_hardening.py
   test_phase1_coordinator.py
   test_phase2_governance.py
 colorharness/            color-team coordinator + task state machine (Phase 1)
                          + White Team governance: scope, risk, approvals,
                          evidence ledger, audit (Phase 2)
+                         + hardening: scope allowlist, secret scanner,
+                         reviewer roles/quorum, watchdog, ledger manifest
 athp/                    RFC-0042 harness (moon_base, server, lifecycle, conformance)
 ```
 
@@ -101,8 +105,16 @@ python -m pytest tests/ -v
 ## Guarantees
 
 - Production and destructive actions are approval-gated, always.
-- No team has authority outside DevOps scope.
+- No team has authority outside DevOps scope; out-of-scope domains are refused
+  at intake and on scope expansion.
+- Approvals are bound to reviewer roles and satisfy a risk-tier quorum (Red
+  requires a security-lead and a platform-owner from two distinct approvers);
+  approvals expire after 90 days by default.
+- Secrets are scanned for and refused at intake, on transitions, and at every
+  ledger append.
 - Evidence is immutable; incomplete evidence cannot be marked complete.
-- Blocking and escalation are evidence-backed.
+- Blocking and escalation are evidence-backed; the watchdog quarantines silent
+  agents and escalates stale blocks.
 - No team self-approves; no agent broadens scope silently; no restarted
-  command duplicates a completed transition.
+  command duplicates a completed transition, and reusing an idempotency key
+  with different payload content is refused.

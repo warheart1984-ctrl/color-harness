@@ -103,12 +103,23 @@ Supporting states: `BLOCKED`, `ESCALATED`, `ROLLED_BACK`.
 8. G8 — Blocks are evidence-backed.
 9. G9 — Replayed/restarted commands never duplicate completed transitions.
 10. G10 — Pause outranks progress (White may pause when evidence/authority is insufficient).
+11. G11 — Approvals are recorded by reviewer role and must satisfy the risk-tier
+    quorum (Yellow: one `ci-operator`; Orange: one `security-lead`; Red:
+    `security-lead` + `platform-owner`, two distinct approvers); 90-day default
+    expiry.
+12. G12 — Out-of-scope domains are refused at intake and on expansion, via the
+    `DEVOPS_ALLOWLIST` in `colorharness/scope.py`.
+13. G13 — Secret material is scanned for at intake, on transitions, and before
+    every ledger append, and refused.
+14. G14 — The watchdog quarantines agents missing their heartbeat threshold and
+    escalates tasks held in BLOCKED/ESCALATED past the stale-block window.
 
 ## 6. Acceptance criteria (per build phase)
 
 | Phase | Deliverable | Acceptance |
 | --- | --- | --- |
 | 0 Repository & contract | README, RFC-0001, docs/*, tests/ | unique definitions; DevOps-only authority; production/destructive approval-gated |
+| 0b Hardening | scope allowlist, secret scan, reviewer roles/quorum, idempotency fingerprints, watchdog, ledger manifest | out-of-scope refused; secrets refused; role-quorum gates; replayed messages return stored outcome; watchdog quarantines/escalates; manifest anchor detects tampering |
 | 1 Coordinator & state machine | task model, registration, transitions, task/correlation IDs, event log | illegal transitions rejected; complete transition records; no duplicate on restart |
 | 2 White governance | scope, authority matrix, approvals, risk, evidence ledger, pause, audit output | missing approval blocks; scope expansion needs approval; incomplete cannot complete |
 | 3 Observer & Blue | read-only collection; monitoring/alerts/runbooks | observer has no write; facts/interpretations separated; recommendations cite evidence |
@@ -159,3 +170,4 @@ imports ATHP spans as transition records.
 | Date | Decision | Decision record |
 | --- | --- | --- |
 | 2026-09-18 | Adopt task state machine + evidence-ledger model on ATHP harness | pending (Phase 2) |
+| 2026-09-18 | Hardening pass: role-based approval quorum (90-day expiry), DevOps scope allowlist, secret scanning, idempotency fingerprints, watchdog quarantine/escalation, ledger manifest digest | `tests/test_phase0b_hardening.py` + `test_phase1_coordinator.py` + `test_phase2_governance.py` |

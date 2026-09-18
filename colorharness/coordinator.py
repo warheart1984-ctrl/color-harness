@@ -19,12 +19,25 @@ from ._common import (
     now_utc_iso,
     resolve_next_state,
 )
-from .eventlog import Event, EventLog
+from .eventlog import (
+    IDEMPOTENCY_CONFLICT,
+    Event,
+    EventLog,
+    idempotency_fingerprint,
+)
 from .governance import GOVERNED_ACTIONS
-from .registry import TeamRegistry
+from .registry import RESOLVER_ROLES, TeamRegistry
+from .scope import ScopeOutOfBoundsError, validate_scope
+from .secrets import SecretExposureError, scan_for_secrets
+from .watchdog import SYSTEM_AGENT as WATCHDOG_SYSTEM_AGENT
 
 if TYPE_CHECKING:
     from .governance import WhiteTeam
+    from .watchdog import Watchdog
+
+
+def _has_secret(*values: Any) -> bool:
+    return any(scan_for_secrets(v) for v in values)
 
 
 class Coordinator:
@@ -35,6 +48,7 @@ class Coordinator:
         registry: Optional[TeamRegistry] = None,
         store_path: Optional[str] = None,
         governance: Optional["WhiteTeam"] = None,
+        watchdog: Optional["Watchdog"] = None,
     ):
         self.registry = registry or TeamRegistry()
         if not self.registry.is_registered(self.SYSTEM_AGENT):
@@ -43,6 +57,9 @@ class Coordinator:
                 "coordinator",
                 ("route", "transition", "record"),
             )
+        if watchdog is not None and not self.registry.is_registered(WATCHDOG_SYSTEM_AGENT):
+            self.registry.register(WATCHDOG_SYSTEM_AGENT, "observer")
+        self.watchdog = watchdog
         self.governance = governance
         self.log = EventLog(store_path)
         self._tasks: dict[str, dict[str, Any]] = {}
@@ -73,6 +90,25 @@ class Coordinator:
         request_id = request_id or f"req-{uuid.uuid4().hex[:12]}"
         evidence_refs = evidence_refs or (f"task://{task_id}",)
 
+        try:
+            validate_scope(dict(scope))
+        except ScopeOutOfBoundsError as exc:
+            return self._rejection_dict(
+                task_id, request_id, None, RejectionCode.SCOPE_OUT_OF_BOUNDS, str(exc)
+            )
+        if _has_secret(title, reason, scope, evidence_refs):
+            return self._rejection_dict(
+                task_id, request_id, None, RejectionCode.SECRET_EXPOSURE,
+                "task payload contains secret material",
+            )
+        fingerprint = idempotency_fingerprint(title, dict(scope), risk)
+        cached = self.log.seen(actor, request_id, fingerprint)
+        if cached is IDEMPOTENCY_CONFLICT or cached is not None:
+            return self._rejection_dict(
+                task_id, request_id, None, RejectionCode.IDEMPOTENCY_CONFLICT,
+                "idempotency key already used",
+            )
+
         task = {
             "task_id": task_id,
             "correlation_id": correlation_id,
@@ -83,6 +119,7 @@ class Coordinator:
             "resume_state": None,
             "seq": 0,
             "created_at": now_utc_iso(),
+            "state_entered": {TaskState.INTAKE.value: now_utc_iso()},
         }
         event = Event(
             event_id=f"evt-{uuid.uuid4().hex[:16]}",
@@ -105,7 +142,7 @@ class Coordinator:
                 "risk": risk,
             },
         )
-        result = self.log.append(event)
+        result = self.log.append(event, fingerprint)
         self._apply(event, task)
         self._tasks[task_id] = task
         if self.governance is not None:
@@ -134,20 +171,23 @@ class Coordinator:
         action: Optional[str] = None,
     ) -> dict:
         request_id = request_id or f"req-{uuid.uuid4().hex[:12]}"
-        cached = self.log.seen(task_id, request_id)
+        fingerprint = idempotency_fingerprint(
+            trigger.value, actor, reason, tuple(evidence_refs), action
+        )
+        cached = self.log.seen(actor, request_id, fingerprint)
+        if cached is IDEMPOTENCY_CONFLICT:
+            return self._rejection_dict(
+                task_id, request_id, None, RejectionCode.IDEMPOTENCY_CONFLICT,
+                "idempotency key reused with a different payload",
+            )
         if cached is not None:
             return cached
 
         task = self._tasks.get(task_id)
         if task is None:
-            return self._rejection(
-                task_id,
-                request_id,
-                trigger,
-                actor,
-                RejectionCode.TASK_NOT_FOUND,
+            return self._rejection_dict(
+                task_id, request_id, None, RejectionCode.TASK_NOT_FOUND,
                 f"no task with id '{task_id}'",
-                recorded=False,
             )
         if (
             self.governance is not None
@@ -158,12 +198,26 @@ class Coordinator:
                 task, trigger, actor, request_id,
                 RejectionCode.PAUSED,
                 "task is paused by the white team",
+                fingerprint=fingerprint,
+            )
+        if self.watchdog is not None and self.watchdog.is_quarantined(actor):
+            return self._record_rejection(
+                task, trigger, actor, request_id,
+                RejectionCode.AGENT_QUARANTINED,
+                f"actor '{actor}' is quarantined by the watchdog",
+                fingerprint=fingerprint,
             )
         if not evidence_refs:
             return self._record_rejection(
                 task, trigger, actor, request_id,
                 RejectionCode.EVIDENCE_MISSING,
                 "a transition requires at least one evidence reference",
+                fingerprint=fingerprint,
+            )
+        if _has_secret(reason, evidence_refs, action):
+            return self._rejection_dict(
+                task_id, request_id, None, RejectionCode.SECRET_EXPOSURE,
+                "transition reason/evidence contains secret material",
             )
         try:
             team = self.registry.team_of(actor)
@@ -172,6 +226,7 @@ class Coordinator:
                 task, trigger, actor, request_id,
                 RejectionCode.ACTOR_UNKNOWN,
                 f"actor '{actor}' is not a registered agent",
+                fingerprint=fingerprint,
             )
 
         current = TaskState(task["state"])
@@ -194,11 +249,15 @@ class Coordinator:
                     f"cannot {trigger.value} from state '{current.value}'",
                 )
         elif trigger in RESOLUTION_TRIGGERS:
-            if team not in ("coordinator", "white"):
+            can_resolve = actor == self.SYSTEM_AGENT or any(
+                self.registry.has_role(actor, role) for role in RESOLVER_ROLES
+            )
+            if not can_resolve:
                 return self._record_rejection(
                     task, trigger, actor, request_id,
-                    RejectionCode.SCOPE_INVALID,
-                    f"team '{team}' may not resolve '{trigger.value}'",
+                    RejectionCode.AUTH_INVALID,
+                    f"actor '{actor}' holds no resolver role for '{trigger.value}'",
+                    fingerprint=fingerprint,
                 )
         else:
             owners = STATE_OWNERS.get(current, frozenset())
@@ -250,7 +309,7 @@ class Coordinator:
             decision_id=self._new_decision_id(),
             evidence_refs=tuple(evidence_refs),
         )
-        result = self.log.append(event)
+        result = self.log.append(event, fingerprint)
         self._apply(event, task)
         if self.governance is not None:
             self.governance.record_transition(event)
@@ -269,6 +328,12 @@ class Coordinator:
 
     def task_exists(self, task_id: str) -> bool:
         return task_id in self._tasks
+
+    def state_entered_at(self, task_id: str) -> dict[str, str]:
+        task = self._tasks.get(task_id)
+        if task is None:
+            return {}
+        return dict(task.get("state_entered") or {})
 
     def events(self) -> list[Event]:
         return list(self.log.events)
@@ -298,23 +363,8 @@ class Coordinator:
         else:
             task["resume_state"] = None
         task["seq"] = max(task["seq"], event.seq)
-
-    def _rejection(
-        self,
-        task_id: str,
-        request_id: str,
-        trigger: Trigger,
-        actor: str,
-        code: RejectionCode,
-        detail: str,
-        *,
-        recorded: bool,
-    ) -> dict:
-        if not recorded:
-            return self._rejection_dict(task_id, request_id, None, code, detail)
-        return self._record_rejection(
-            self._tasks[task_id], trigger, actor, "", request_id, code, detail,
-        )
+        entered = task.setdefault("state_entered", {})
+        entered[event.to_state] = event.timestamp
 
     def _rejection_dict(
         self,
@@ -340,6 +390,7 @@ class Coordinator:
         request_id: str,
         code: RejectionCode,
         detail: str,
+        fingerprint: str = "",
     ) -> dict:
         event = Event(
             event_id=f"evt-{uuid.uuid4().hex[:16]}",
@@ -358,7 +409,7 @@ class Coordinator:
             evidence_refs=(),
         )
         task["seq"] = max(task["seq"], event.seq)
-        result = self.log.append(event)
+        result = self.log.append(event, fingerprint)
         return result
 
     def _replay(self) -> None:
@@ -377,6 +428,7 @@ class Coordinator:
                     "resume_state": None,
                     "seq": 0,
                     "created_at": event.timestamp,
+                    "state_entered": {TaskState.INTAKE.value: event.timestamp},
                 }
                 self._tasks[event.task_id] = task
             self._apply(event, task)

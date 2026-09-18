@@ -17,8 +17,14 @@ diagnosis, and release auditable.
 3. Every task state transition records at least one evidence reference.
 4. Secrets never appear in evidence payloads, details, or sources. A record
    that would carry a secret carries a reference to the secret store instead.
+   The ledger scans every appended payload and source for secret patterns
+   (`sk_`/`ghp_`/`AKIA` token forms, private-key headers) and refuses
+   (`SecretExposureError`) any record containing them.
 5. The ledger is tamper-evident: each record stores the digest of the previous
    record, forming a hash chain.
+6. The ledger exposes a whole-store **manifest digest** (sha256 over the JCS
+   record list) that is persisted externally. Recomputing the digest against
+   the stored anchor detects any alteration or fork of the store.
 
 ## 2. Evidence record (JSON)
 
@@ -45,6 +51,14 @@ diagnosis, and release auditable.
 `payload_digest` and `prev_hash` make records content-addressable and
 tamper-evident. A record whose `prev_hash` does not match the actual previous
 record is evidence of tampering (or a fork) and disqualifies the rest.
+
+### Ledger manifest
+
+`EvidenceLedger.manifest()` returns the JCS-serialised list of all records
+(`evidence_id`, `payload_digest`, `prev_hash`, `body_hash`) plus a
+`manifest_digest` — the sha256 of that body. Persist the digest outside the
+store (e.g. in a signed envelope); `verify_manifest(anchor)` is `false` the
+moment the live store no longer recomputes to the anchor.
 
 ## 3. Record types
 
@@ -90,7 +104,11 @@ mandatory sub-details of the payload type:
 - `finding`: `reproduction[]`, `impact`, `severity`,
   `remediation_recommendation`.
 - `remediation`: `change_ref`, `re_test_ref`, `verdict` (closed|open).
-- `approval`: `approver`, `scope`, `expiry`, `gated_action`, `decision_id`.
+- `approval`: `approver`, `approver_role`, `approver_team`, `scope`, `expiry`,
+  `gated_action`, `decision_id`, `ttl_seconds`, `issued_epoch`,
+  `expires_at_epoch`. The `approver_role` (one of `ci-operator`,
+  `security-lead`, `platform-owner`) is what the quorum gate evaluates; the
+  recorded role must be held by the approver at evaluation time.
 - `decision`: `decision_type`, `decider`, `reasoning`, `scope`, `expiry`.
 - `block`: `reason_code`, `condition`, `evidence_refs[]`.
 - `release`: `artifact_ref`, `target_environment`, `plan_ref`,

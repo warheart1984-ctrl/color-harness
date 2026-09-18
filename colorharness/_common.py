@@ -10,6 +10,11 @@ def now_utc_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 
+# ATHP-parity retention window for approvals and manifests.
+RETENTION_DAYS = 90
+APPROVAL_TTL_SECONDS = RETENTION_DAYS * 24 * 3600
+
+
 class TaskState(str, Enum):
     INTAKE = "INTAKE"
     OBSERVE = "OBSERVE"
@@ -58,6 +63,11 @@ class RejectionCode(str, Enum):
     ABSORBING = "ABSORBING"
     PAUSED = "PAUSED"
     APPROVAL_MISSING = "APPROVAL_MISSING"
+    SCOPE_OUT_OF_BOUNDS = "SCOPE_OUT_OF_BOUNDS"
+    IDEMPOTENCY_CONFLICT = "IDEMPOTENCY_CONFLICT"
+    AUTH_INVALID = "AUTH_INVALID"
+    SECRET_EXPOSURE = "SECRET_EXPOSURE"
+    AGENT_QUARANTINED = "AGENT_QUARANTINED"
 
 
 PATH_TRANSITIONS: dict[tuple[TaskState, Trigger], TaskState] = {

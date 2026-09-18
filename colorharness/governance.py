@@ -11,11 +11,12 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from ._common import Trigger, now_utc_iso
+from ._common import APPROVAL_TTL_SECONDS, Trigger, now_utc_iso
 from .eventlog import Event
 from .ledger import EvidenceLedger
+from .registry import APPROVER_ROLES, TeamRegistry
 from .risk import RiskClass, is_higher, normalize
-from .registry import TeamRegistry
+from .scope import ScopeOutOfBoundsError, validate_scope
 
 GOVERNED_ACTIONS: dict[Trigger, str] = {
     Trigger.RELEASE_APPROVED: "release",
@@ -30,6 +31,18 @@ PROTECTED_ACTIONS: frozenset[str] = frozenset(
 AUDIT_TYPES: frozenset[str] = frozenset(
     {"approval", "decision", "scope_declaration", "pause", "transition"}
 )
+
+# Minimum approval authority required to clear a given risk tier. Red requires
+# both roles *and* two distinct approvers; orange requires a security-lead;
+# green/yellow require a ci-operator.
+RISK_AUTHORITY: dict[str, frozenset[str]] = {
+    "green": frozenset({"ci-operator"}),
+    "yellow": frozenset({"ci-operator"}),
+    "orange": frozenset({"security-lead"}),
+    "red": frozenset({"security-lead", "platform-owner"}),
+}
+
+QUORUM_COUNT: dict[str, int] = {"green": 1, "yellow": 1, "orange": 1, "red": 2}
 
 
 class GovernanceError(Exception):
@@ -49,6 +62,18 @@ class RiskRegressionError(GovernanceError):
 
 
 class ScopeNotDeclaredError(GovernanceError):
+    pass
+
+
+class RoleRequiredError(GovernanceError):
+    pass
+
+
+class AmbiguousRoleError(GovernanceError):
+    pass
+
+
+class RoleRiskForbidden(GovernanceError):
     pass
 
 
@@ -86,6 +111,7 @@ class ApprovalRecord:
     gated_action: str
     approver: str
     approver_team: str
+    approver_role: str
     scope: dict
     issued_at: str
     issued_epoch: float
@@ -145,6 +171,7 @@ class WhiteTeam:
                     gated_action=payload.get("gated_action", ""),
                     approver=payload.get("approver", record.actor),
                     approver_team=payload.get("approver_team", "unknown"),
+                    approver_role=payload.get("approver_role", ""),
                     scope=dict(payload.get("scope", {})),
                     issued_at=record.timestamp,
                     issued_epoch=float(payload.get("issued_epoch", 0.0)),
@@ -185,6 +212,7 @@ class WhiteTeam:
         correlation_id: Optional[str] = None,
     ) -> ScopeDeclaration:
         risk_cls = normalize(risk)
+        validate_scope(dict(scope))
         record = self.ledger.append(
             "scope_declaration",
             actor=declared_by,
@@ -232,6 +260,8 @@ class WhiteTeam:
                 merged[key] = sorted(set(merged[key]) | set(value))
             else:
                 merged[key] = list(value) if isinstance(value, (list, tuple, set)) else value
+
+        validate_scope(merged)
 
         if approval_id is None or not self.approval_valid(
             approval_id, task_id, "scope_expansion", merged
@@ -331,57 +361,102 @@ class WhiteTeam:
         gated_action: str,
         approver: str,
         scope: dict,
-        ttl_seconds: int = 3600,
+        ttl_seconds: Optional[int] = None,
         author: Optional[str] = None,
+        approver_role: Optional[str] = None,
     ) -> ApprovalRecord:
         if author is not None and approver == author:
             raise NoSelfApprovalError(
                 f"approver '{approver}' is the author of the change and may not approve it"
             )
+        role = self._resolve_approver_role(approver, approver_role, task_id)
+
         approved_team = "unknown"
         if self.registry is not None and self.registry.is_registered(approver):
             approved_team = self.registry.team_of(approver)
 
+        ttl = APPROVAL_TTL_SECONDS if ttl_seconds is None else int(ttl_seconds)
         issued_epoch = time.time()
         now_str = now_utc_iso()
-        expires_epoch = issued_epoch + ttl_seconds
+        expires_epoch = issued_epoch + ttl
         expires_dt = datetime.fromtimestamp(expires_epoch, tz=timezone.utc)
         expires_str = expires_dt.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+        approval_id = f"apr-{uuid.uuid4().hex[:12]}"
         record = self.ledger.append(
             "approval",
             actor=approver,
             team="white",
             source="governance://record_approval",
             payload={
-                "approval_id": f"apr-{uuid.uuid4().hex[:12]}",
+                "approval_id": approval_id,
                 "approver": approver,
                 "approver_team": approved_team,
+                "approver_role": role,
                 "scope": dict(scope),
                 "expiry": expires_str,
                 "gated_action": gated_action,
                 "decision_id": f"dec-{uuid.uuid4()}",
-                "ttl_seconds": ttl_seconds,
+                "ttl_seconds": ttl,
                 "issued_epoch": issued_epoch,
                 "expires_at_epoch": expires_epoch,
             },
             task_id=task_id,
         )
         approval = ApprovalRecord(
-            approval_id=record.payload["approval_id"],
+            approval_id=approval_id,
             task_id=task_id,
             gated_action=gated_action,
             approver=approver,
             approver_team=approved_team,
+            approver_role=role,
             scope=dict(scope),
             issued_at=now_str,
             issued_epoch=issued_epoch,
-            ttl_seconds=ttl_seconds,
+            ttl_seconds=ttl,
             evidence_id=record.evidence_id,
             expires_at_epoch=expires_epoch,
             expires_at=expires_str,
         )
         self._approvals[approval.approval_id] = approval
         return approval
+
+    def _resolve_approver_role(
+        self,
+        approver: str,
+        explicit: Optional[str],
+        task_id: str,
+    ) -> str:
+        if explicit is not None:
+            if explicit not in APPROVER_ROLES:
+                from .registry import UnknownRoleError
+                raise UnknownRoleError(f"unknown reviewer role '{explicit}'")
+            role = explicit
+        else:
+            if self.registry is None:
+                raise RoleRequiredError(
+                    "approver_role is required when no registry is configured"
+                )
+            held = APPROVER_ROLES & self.registry.role_of(approver)
+            if not held:
+                raise RoleRequiredError(
+                    f"approver '{approver}' holds no reviewer role"
+                )
+            if len(held) > 1:
+                raise AmbiguousRoleError(
+                    f"approver '{approver}' holds multiple roles {sorted(held)}; "
+                    "pass approver_role explicitly"
+                )
+            role = next(iter(held))
+        if self.registry is not None and not self.registry.has_role(approver, role):
+            raise RoleRequiredError(
+                f"approver '{approver}' does not hold role '{role}'"
+            )
+        risk = self.current_risk(task_id).value
+        if role not in RISK_AUTHORITY[risk]:
+            raise RoleRiskForbidden(
+                f"role '{role}' has no approval authority over {risk}-tier task '{task_id}'"
+            )
+        return role
 
     def revoke_approval(
         self,
@@ -443,12 +518,49 @@ class WhiteTeam:
         requested_scope: Optional[dict] = None,
         now_epoch: Optional[float] = None,
     ) -> bool:
-        return any(
-            self.approval_valid(
-                a.approval_id, task_id, gated_action, requested_scope, now_epoch=now_epoch
-            )
-            for a in self._approvals.values()
+        return self.approval_quorum_met(
+            task_id,
+            gated_action,
+            requested_scope=requested_scope,
+            now_epoch=now_epoch,
         )
+
+    def approval_quorum_met(
+        self,
+        task_id: str,
+        gated_action: str,
+        *,
+        requested_scope: Optional[dict] = None,
+        now_epoch: Optional[float] = None,
+    ) -> bool:
+        """True when valid approvals satisfy the task risk tier's quorum:
+        all required roles present (red = security-lead + platform-owner)
+        and enough distinct approvers (red = 2, else 1).
+        """
+        risk = self.current_risk(task_id).value
+        required_roles = RISK_AUTHORITY[risk]
+        quorum = QUORUM_COUNT[risk]
+        covered_roles: set[str] = set()
+        approvers: set[str] = set()
+        for approval in self._approvals.values():
+            if not self.approval_valid(
+                approval.approval_id,
+                task_id,
+                gated_action,
+                requested_scope,
+                now_epoch=now_epoch,
+            ):
+                continue
+            if not approval.approver_role:
+                continue
+            if (
+                self.registry is not None
+                and not self.registry.has_role(approval.approver, approval.approver_role)
+            ):
+                continue
+            covered_roles.add(approval.approver_role)
+            approvers.add(approval.approver)
+        return required_roles <= covered_roles and len(approvers) >= quorum
 
     def require_approval(
         self,

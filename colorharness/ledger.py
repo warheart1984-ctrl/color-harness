@@ -10,6 +10,7 @@ from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Optional
 
 from ._common import now_utc_iso
+from .secrets import raise_if_secret
 
 GENESIS_HASH = "0" * 64
 
@@ -179,6 +180,8 @@ class EvidenceLedger:
         retention_days: int = 90,
         event_id: str = "",
     ) -> EvidenceRecord:
+        raise_if_secret(payload)
+        raise_if_secret(source)
         prev_hash = self._records[-1].body_hash() if self._records else GENESIS_HASH
         record = EvidenceRecord(
             evidence_id=f"evt-{uuid.uuid4().hex[:16]}",
@@ -260,3 +263,42 @@ class EvidenceLedger:
                 return False
             prev = record.body_hash()
         return True
+
+    def manifest(self) -> dict:
+        """JCS manifest of the whole ledger: digest + fingerprint per record.
+
+        manifest_digest is the sha256 of the JCS-serialised manifest body,
+        anchoring the entire append-only store to one value.
+        """
+        entries = [
+            {
+                "evidence_id": r.evidence_id,
+                "payload_digest": r.payload_digest,
+                "prev_hash": r.prev_hash,
+                "body_hash": r.body_hash(),
+            }
+            for r in self._records
+        ]
+        body = {"records": entries, "count": len(entries)}
+        return {
+            "manifest_digest": sha256_hex(canonical_json(body)),
+            "entries": entries,
+        }
+
+    def manifest_digest(self) -> str:
+        return self.manifest()["manifest_digest"]
+
+    def verify_manifest(self, expected: Optional[str] = None) -> bool:
+        """Compare the recomputed manifest digest against an anchor.
+
+        ``expected`` is the manifest digest previously persisted elsewhere
+        (the external anchor); without it the check is trivially consistent
+        with the live ledger so tamper detection requires the anchor.
+        """
+        current = self.manifest()
+        recomputed = sha256_hex(
+            canonical_json({"records": current["entries"], "count": len(current["entries"])})
+        )
+        if expected is None:
+            return recomputed == current["manifest_digest"]
+        return recomputed == expected

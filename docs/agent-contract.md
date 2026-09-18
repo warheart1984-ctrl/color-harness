@@ -22,6 +22,12 @@ scanning hooks, observability, and operational runbooks **within this
 repository and its declared target environments**. No agent or team may
 acquire authority over anything outside that scope.
 
+The allowed domain set is the mechanical allowlist `DEVOPS_ALLOWLIST` in
+`colorharness/scope.py` (`repo`, `ci_cd`, `iac`, `config`, `tooling`,
+`tests`, `docs`, `monitoring`, `secrets_policy`). A task whose declared scope
+names any other domain is refused at intake with `SCOPE_OUT_OF_BOUNDS`; a
+scope cannot be expanded with an out-of-bounds domain either.
+
 ## 2. Canonical vocabulary
 
 Each term below has exactly one definition. It is a contract violation for any
@@ -46,8 +52,20 @@ document to give a different meaning to a term defined here.
 
 - **approval** — A recorded, retractable decision by an authorized approver
   that permits a protected action to proceed. An approval has an approval
-  record, an approver, a scope, and an expiry. A missing, stale, or expired
-  approval blocks execution.
+  record, an approver, a reviewer role, a scope, and an expiry. A missing,
+  stale, or expired approval blocks execution.
+
+- **reviewer role** — A named approval authority (`ci-operator`,
+  `security-lead`, `platform-owner`) held by registered agents and distinct
+  from team colors. Approvals are bound to roles, not to team names; a role
+  only clears the risk tiers its authority covers, and approving with a
+  revoked role voids the approval.
+
+- **quorum** — The minimum set of valid approvals that clears a protected
+  gate for a given risk tier: one `ci-operator` for Green/Yellow, one
+  `security-lead` for Orange, and both a `security-lead` and a
+  `platform-owner` from two distinct approvers for Red. A Red gate cannot be
+  cleared by a single approver holding two roles.
 
 - **risk** — The assessed operational consequence of an action before it is
   taken, classified as Green, Yellow, Orange, or Red. Risk classes the action;
@@ -202,6 +220,16 @@ document to give a different meaning to a term defined here.
   same identifier does not duplicate its effect or its recorded transition.
   A restarted command must not duplicate a completed transition.
 
+- **idempotency fingerprint** — The sha256 (JCS) of an operation's payload
+  fields bound to an `(actor, request_id)` key. Replaying the same key with
+  the same fingerprint returns the stored outcome; reusing the key with a
+  different fingerprint is an `IDEMPOTENCY_CONFLICT` and is refused.
+
+- **manifest digest** — The sha256 over the JCS body of the whole ledger's
+  record list (`manifest_digest` in `EvidenceLedger.manifest()`). It is the
+  external anchor: persisted elsewhere, it proves the ledger was, or was not,
+  altered since the anchor was taken.
+
 - **evidence ledger** — The append-only store of all evidence records. Ledger
   entries are immutable; at-most-once supersession is recorded as new entries.
 
@@ -239,6 +267,20 @@ The following clauses bind all agents and teams. They are non-negotiable.
   (idempotency). Replayed messages return their stored outcome.
 - G10. Pause outranks progress. Any team member may request a pause; the white
   team may pause work whenever evidence or authority is insufficient.
+- G11. Approvals are bound to reviewer roles, never to team colors. An
+  approval must be recorded by a role with authority over the task's risk tier
+  (see the quorum in `docs/authority-matrix.md` §4); an approval whose
+  approver no longer holds the recorded role is void. Approval default expiry
+  is 90 days.
+- G12. Out-of-scope domains are refused, not ignored. A task whose declared
+  scope names a domain outside `DEVOPS_ALLOWLIST` is rejected at intake, and a
+  scope expansion may not introduce one.
+- G13. Secret material is scanned for at intake, on transitions, and before
+  any ledger append. Secrets (Stripe/AWS/GitHub token forms, private key
+  headers) are refused with `SECRET_EXPOSURE`; the ledger never stores them.
+- G14. The watchdog quarantines agents that miss their heartbeat threshold and
+  escalates tasks held in BLOCKED/ESCALATED past the stale-block window;
+  a quarantined agent's transitions are refused with `AGENT_QUARANTINED`.
 
 ### 3.2 Team obligations
 
@@ -319,7 +361,15 @@ Intercepted/stalled states:
 - Approval gates appear at BUILD (Yellow), APPROVE (Green + coordinator), and
   RELEASE (explicit production approval). See `docs/authority-matrix.md` for
   the full matrix.
-- A gate closes only when its checks pass and its approvals are recorded.
+- A gate closes only when its checks pass and its approvals meet the quorum
+  for the task's current risk tier. Approvals default to a 90-day expiry;
+  expired, revoked, or role-voided approvals never count toward a quorum.
+- A task's approval token is an approval specified by the role-based quorum;
+  approvals are recorded per role and per approver, so a Red gate needs two
+  distinct approvers (a security-lead and a platform-owner).
+- Replaying a transition that already succeeded returns the stored outcome
+  (idempotency); reusing an idempotency key with different payload content is
+  refused as an `IDEMPOTENCY_CONFLICT`.
 
 ## 6. Contract non-negotiables
 
@@ -338,3 +388,18 @@ Intercepted/stalled states:
   `docs/authority-matrix.md`.
 - Production and destructive actions are approval-gated in this contract
   (clause G1, §5) and in `docs/authority-matrix.md`.
+
+## 8. Acceptance (Phase 0b — hardening)
+
+Mechanically enforced by `tests/test_phase0b_hardening.py`:
+
+- Out-of-scope domains are refused, not ignored (G12).
+- Secret material is detected and refused at intake, on transitions, and on
+  ledger append (G13).
+- Approvals are role-bound and tier-quorum-satisfying, with a 90-day default
+  expiry (G11).
+- Replayed messages return stored outcomes; conflicting payloads under an
+  existing key are refused (idempotency fingerprint).
+- The watchdog quarantines silent agents and escalates stale blocks (G14).
+- The ledger exposes a manifest digest that detects any change since the
+  anchor was taken.
