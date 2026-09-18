@@ -44,6 +44,7 @@ PAYLOAD_REQUIREMENTS: dict[str, frozenset[str]] = {
     "hypothesis": frozenset({"hypothesis", "confidence", "alternatives", "discriminator"}),
     "experiment": frozenset({"setup", "inputs_ref", "result_ref", "verified"}),
     "diagnosis": frozenset({"diagnosis", "confidence", "evidence_refs", "alternatives"}),
+    "change": frozenset({"change_type", "branch", "diff_summary", "rollback_metadata"}),
     "test_result": frozenset({"command", "version", "exit_status", "artifacts_ref", "evidence_location"}),
     "finding": frozenset({"reproduction", "impact", "severity", "remediation_recommendation"}),
     "remediation": frozenset({"change_ref", "re_test_ref", "verdict"}),

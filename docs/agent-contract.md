@@ -175,6 +175,9 @@ document to give a different meaning to a term defined here.
 - **change manifest** — The document listing every file, branch, resource, and
   configuration an implementation touches, together with its diff summary and
   its task ID and approval scope. A change with no manifest is not attributable.
+  Silver persists each manifest as `change` evidence (via White Team) before the
+  implementation is marked ready; a manifest carries non-empty rollback metadata
+  and never contains secret material.
 
 - **exception** — A recorded, time-boxed waiver from a standard that must name
   the standard overridden, the requested duration, the approving authority, and

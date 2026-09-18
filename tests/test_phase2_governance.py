@@ -224,6 +224,7 @@ def test_pause_blocks_progression_until_resume(tmp_path) -> None:
     assert c.get_task(task["task_id"])["state"] == TaskState.BUILD.value
 
     gov.resume(task["task_id"], actor="white.sys-1", reason="resolved")
+    _record_gate_evidence(c, task["task_id"], Trigger.IMPLEMENTATION_READY)
     ok = c.apply_transition(
         task["task_id"], Trigger.IMPLEMENTATION_READY, actor="silver.build-1",
         reason="ready", evidence_refs=("log://ready",), request_id="rid-ready-ok",

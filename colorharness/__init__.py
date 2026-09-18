@@ -71,6 +71,16 @@ from .black import (
     Hypothesis,
     InvalidInputError,
 )
+from .silver import (
+    ChangeManifest,
+    InvalidImplementationError,
+    SecretInImplementationError,
+    SILVER_CHANGE_TYPES,
+    SilverNoEvidenceError,
+    SilverTeam,
+    SilverTeamError,
+    SilverUnauthorizedActorError,
+)
 
 __all__ = [
     "Coordinator",
@@ -127,4 +137,12 @@ __all__ = [
     "Experiment",
     "Diagnosis",
     "InvalidInputError",
+    "SilverTeam",
+    "SilverTeamError",
+    "SilverNoEvidenceError",
+    "SilverUnauthorizedActorError",
+    "SecretInImplementationError",
+    "InvalidImplementationError",
+    "ChangeManifest",
+    "SILVER_CHANGE_TYPES",
 ]

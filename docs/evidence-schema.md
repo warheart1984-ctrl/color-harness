@@ -26,8 +26,9 @@ diagnosis, and release auditable.
    record list) that is persisted externally. Recomputing the digest against
    the stored anchor detects any alteration or fork of the store.
 7. Coordinator progression is evidence-gated: `OBSERVATIONS_READY` refuses to
-   fire until at least one `observation` record exists for the task, and
-   `DIAGNOSIS_ACCEPTED` until at least one `diagnosis` record exists
+   fire until at least one `observation` record exists for the task,
+   `DIAGNOSIS_ACCEPTED` until at least one `diagnosis` record exists, and
+   `IMPLEMENTATION_READY` until at least one `change` record exists
    (`EVIDENCE_NOT_RECORDED`). Phase transitions advance on recorded evidence,
    not merely on an asserted evidence reference.
 
@@ -77,6 +78,7 @@ moment the live store no longer recomputes to the anchor.
 | `hypothesis` | black | hypothesis text, confidence, alternatives, discriminator |
 | `experiment` | black | controlled experiment, inputs, result |
 | `diagnosis` | black | diagnosis, confidence, evidence references, alternatives |
+| `change` | silver | change type, branch, files, diff summary, rollback metadata, plan references |
 | `test_result` | yellow | command, version, exit status, artifact location |
 | `finding` | red | reproduction steps, impact, severity, remediation recommendation |
 | `remediation` | purple | change/control applied, re-test evidence, closure verdict |
@@ -113,6 +115,11 @@ mandatory sub-details of the payload type:
   `alternatives[]`, `discriminator`.
 - `experiment`: `setup`, `inputs_ref`, `result_ref`, `verified` (bool).
 - `diagnosis`: `diagnosis`, `confidence`, `evidence_refs[]`, `alternatives[]`.
+- `change`: `change_type` (branch|config), `branch`, `files[]`,
+  `diff_summary`, `resources[]`, `configurations[]`, `approval_scope`,
+  `plan_refs[]` (the plan evidence the implementation cites), and non-empty
+  `rollback_metadata`. Silver never merges or deploys; secrets never appear in
+  an implementation payload.
 - `test_result`: `command`, `version`, `exit_status`, `artifacts_ref`,
   `evidence_location`.
 - `finding`: `reproduction[]`, `impact`, `severity`,

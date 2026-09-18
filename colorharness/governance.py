@@ -19,6 +19,7 @@ from .observer import FORBIDDEN_INTERPRETATION_KEYS, Observation
 from .registry import APPROVER_ROLES, TeamRegistry
 from .risk import RiskClass, is_higher, normalize
 from .scope import ScopeOutOfBoundsError, validate_scope
+from .silver import ChangeManifest
 
 GOVERNED_ACTIONS: dict[Trigger, str] = {
     Trigger.RELEASE_APPROVED: "release",
@@ -839,6 +840,41 @@ class WhiteTeam:
                         getattr(output, "evidence_refs", ())
                         or (getattr(output, "inputs_ref", ""),)
                     ),
+                )
+            )
+        return records
+
+    def record_silver_output(
+        self,
+        task_id: str,
+        manifests: tuple[ChangeManifest, ...],
+        *,
+        actor: str = "white.sys-1",
+        team: str = "white",
+    ) -> list[EvidenceRecord]:
+        """Record silver-team change manifests as `change` evidence."""
+        records: list[EvidenceRecord] = []
+        for manifest in manifests:
+            records.append(
+                self.ledger.append(
+                    "change",
+                    actor=actor,
+                    team=team,
+                    source=f"silver://ChangeManifest/{manifest.manifest_id}",
+                    payload={
+                        "manifest_id": manifest.manifest_id,
+                        "change_type": manifest.change_type,
+                        "branch": manifest.branch,
+                        "files": list(manifest.files),
+                        "diff_summary": manifest.diff_summary,
+                        "resources": list(manifest.resources),
+                        "configurations": list(manifest.configurations),
+                        "approval_scope": dict(manifest.approval_scope),
+                        "plan_refs": list(manifest.plan_refs),
+                        "rollback_metadata": dict(manifest.rollback_metadata),
+                    },
+                    task_id=task_id,
+                    refs=manifest.plan_refs,
                 )
             )
         return records

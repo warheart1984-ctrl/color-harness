@@ -94,6 +94,7 @@ RESOLUTION_TRIGGERS: frozenset[Trigger] = frozenset({Trigger.UNBLOCK, Trigger.DE
 EVIDENCE_GATED_TRIGGERS: dict[Trigger, str] = {
     Trigger.OBSERVATIONS_READY: "observation",
     Trigger.DIAGNOSIS_ACCEPTED: "diagnosis",
+    Trigger.IMPLEMENTATION_READY: "change",
 }
 
 ABSORBING: frozenset[TaskState] = frozenset({TaskState.CLOSED, TaskState.ROLLED_BACK})

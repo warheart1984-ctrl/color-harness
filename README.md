@@ -65,6 +65,7 @@ completed transition.
 | 2 | White Team governance layer | done |
 | 3 | Observer and Blue Team | done |
 | 4 | Black Team diagnostics | done |
+| 5 | Silver Team implementation | done |
 | 5 | Silver Team implementation | planned |
 | 6 | Yellow Team verification | planned |
 | 7 | Red and Purple Teams | planned |
@@ -88,6 +89,7 @@ tests/
   test_phase2_governance.py
   test_phase3_observer_blue.py
   test_phase4_black_team.py
+  test_phase5_silver_team.py
 colorharness/            color-team coordinator + task state machine (Phase 1)
                          + White Team governance: scope, risk, approvals,
                          evidence ledger, audit (Phase 2)
@@ -97,6 +99,8 @@ colorharness/            color-team coordinator + task state machine (Phase 1)
                          alerts, recommendations, runbooks) (Phase 3)
                          + Black Team (hypotheses, experiments, evidence-based
                          diagnoses) + coordinator evidence gates (Phase 4)
+                         + Silver Team (change manifests with rollback
+                         metadata; no merge/deploy) (Phase 5)
 athp/                    RFC-0042 harness (moon_base, server, lifecycle, conformance)
 ```
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from colorharness import Coordinator, Observer, TeamRegistry
 from colorharness.black import BlackTeam
+from colorharness.silver import SilverTeam
 from colorharness._common import (
     RejectionCode,
     TaskState,
@@ -72,6 +73,15 @@ def _record_gate_evidence(c: Coordinator, task_id: str, trigger: Trigger) -> Non
             alternatives=("flaky metric", "noise"),
         )
         c.governance.record_black_output(task_id, (diag,))
+    elif trigger == Trigger.IMPLEMENTATION_READY:
+        change = SilverTeam(registry=c.registry).present_change(
+            task_id=task_id, actor="silver.build-1",
+            change_type="branch", branch="isolated/helper",
+            files=("deploy.yaml",), diff_summary="helper implementation",
+            plan_refs=("log://helper",),
+            rollback_metadata={"steps": ["git revert helper"]},
+        )
+        c.governance.record_silver_output(task_id, (change,))
 
 
 def drive_full_path(c: Coordinator, task_id: str, prefix: str = "") -> list[str]:
