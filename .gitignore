@@ -6,3 +6,7 @@ venv/
 *.egg-info/
 # external harness repo (RFC-0042)
 athp/
+
+# local agent/editor state
+.cursor/
+AGENTS.md
