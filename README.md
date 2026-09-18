@@ -1,5 +1,13 @@
 # Color DevOps Agent Team
 
+[![Tests](https://github.com/warheart1984-ctrl/color-harness/actions/workflows/tests.yml/badge.svg)](https://github.com/warheart1984-ctrl/color-harness/actions)
+[![Release](https://img.shields.io/github/v/release/warheart1984-ctrl/color-harness)](https://github.com/warheart1984-ctrl/color-harness/releases)
+[![Python](https://img.shields.io/pypi/pyversions/color-harness)](https://pypi.org/project/color-harness/)
+
+```powershell
+pip install color-harness
+```
+
 A DevOps-only multi-agent coordination system made of nine color teams, a
 Coordinator, and a read-only Observer. It is **auditable, approval-gated,
 evidence-driven, and safe by default**, and it builds on the ATHP harness
@@ -54,6 +62,17 @@ ROLLED_BACK  (via a pre-existing rollback plan)
 Every transition records actor, timestamp, reason, and evidence references;
 illegal transitions are rejected; a restarted command never duplicates a
 completed transition.
+
+## Phase 10 proof scenarios
+
+The final integration gate covers eight scenarios: nine-team registration,
+failed-CI blocking, dependency-vulnerability findings, staged release and
+rollback, watchdog quarantine/recovery, idempotent replay, unauthorized
+release rejection, and complete release/rollback evidence recording.
+
+```powershell
+python -m pytest tests/test_phase10_integration.py -q
+```
 
 ## Build status
 
