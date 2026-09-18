@@ -4,3 +4,5 @@ __pycache__/
 .venv/
 venv/
 *.egg-info/
+# external harness repo (RFC-0042)
+athp/
