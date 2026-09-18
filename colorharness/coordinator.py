@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from ._common import (
     ABSORBING,
+    EVIDENCE_GATED_TRIGGERS,
     OPEN_TRIGGERS,
     RESOLUTION_TRIGGERS,
     RESUME_HOLDING,
@@ -281,6 +282,16 @@ class Coordinator:
                     task, trigger, actor, request_id,
                     RejectionCode.APPROVAL_MISSING,
                     f"no valid approval for protected action '{governed_action}'",
+                )
+
+        required_type = EVIDENCE_GATED_TRIGGERS.get(trigger)
+        if required_type and self.governance is not None:
+            if not self.governance.has_evidence(task_id, required_type):
+                return self._record_rejection(
+                    task, trigger, actor, request_id,
+                    RejectionCode.EVIDENCE_NOT_RECORDED,
+                    f"trigger '{trigger.value}' requires a recorded "
+                    f"'{required_type}' evidence record for task '{task_id}'",
                 )
 
         new_state = resolve_next_state(current, trigger, resume_state)

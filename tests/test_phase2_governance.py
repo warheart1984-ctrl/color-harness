@@ -22,7 +22,12 @@ from colorharness import (
 )
 from colorharness._common import RejectionCode, TaskState, Trigger
 from colorharness.risk import RiskClass
-from tests.test_phase1_coordinator import FULL_PATH, drive_full_path, make_registry
+from tests.test_phase1_coordinator import (
+    FULL_PATH,
+    _record_gate_evidence,
+    drive_full_path,
+    make_registry,
+)
 
 
 def make_governed(tmp_path, registry=None) -> tuple[Coordinator, WhiteTeam, TeamRegistry]:
@@ -39,6 +44,7 @@ def _drive_to(c: Coordinator, task_id: str, wanted: TaskState) -> None:
     for trigger, actor, reason in FULL_PATH:
         if TaskState(c.get_task(task_id)["state"]) == wanted:
             return
+        _record_gate_evidence(c, task_id, trigger)
         c.apply_transition(task_id, trigger, actor=actor, reason=reason,
                            evidence_refs=(f"log://{reason}",), request_id=f"rid-{reason}")
 

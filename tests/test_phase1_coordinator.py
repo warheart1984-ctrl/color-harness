@@ -3,7 +3,8 @@ event log, invalid-transition rejection, and restart idempotency."""
 
 from __future__ import annotations
 
-from colorharness import Coordinator, TeamRegistry
+from colorharness import Coordinator, Observer, TeamRegistry
+from colorharness.black import BlackTeam
 from colorharness._common import (
     RejectionCode,
     TaskState,
@@ -50,10 +51,34 @@ FULL_PATH: list[tuple[Trigger, str, str]] = [
 ]
 
 
+def _record_gate_evidence(c: Coordinator, task_id: str, trigger: Trigger) -> None:
+    """Governed flows must record observation/diagnosis evidence before the
+    gated transitions (EVIDENCE_GATED_TRIGGERS) fire. Skipped when the
+    coordinator has no governance attached."""
+    if c.governance is None:
+        return
+    if trigger == Trigger.OBSERVATIONS_READY:
+        obs = Observer().collect(
+            task_id=task_id, observation_type="metrics",
+            detail={"metric": "error_rate", "value": 0.0},
+            source="observer://helper",
+        )
+        c.governance.record_observations(task_id, (obs,))
+    elif trigger == Trigger.DIAGNOSIS_ACCEPTED:
+        diag = BlackTeam(registry=c.registry).diagnose(
+            task_id=task_id, actor="black.diag-1",
+            diagnosis="baseline healthy", confidence="medium",
+            evidence_refs=("log://helper",),
+            alternatives=("flaky metric", "noise"),
+        )
+        c.governance.record_black_output(task_id, (diag,))
+
+
 def drive_full_path(c: Coordinator, task_id: str, prefix: str = "") -> list[str]:
     request_ids = []
     for trigger, actor, reason in FULL_PATH:
         rid = f"{prefix}rid-{trigger.value}"
+        _record_gate_evidence(c, task_id, trigger)
         c.apply_transition(
             task_id, trigger, actor=actor, reason=reason,
             evidence_refs=(f"log://{rid}",), request_id=rid,

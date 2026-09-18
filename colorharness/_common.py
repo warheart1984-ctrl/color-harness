@@ -57,6 +57,7 @@ class Outcome(str, Enum):
 class RejectionCode(str, Enum):
     STATE_INVALID = "STATE_INVALID"
     EVIDENCE_MISSING = "EVIDENCE_MISSING"
+    EVIDENCE_NOT_RECORDED = "EVIDENCE_NOT_RECORDED"
     ACTOR_UNKNOWN = "ACTOR_UNKNOWN"
     SCOPE_INVALID = "SCOPE_INVALID"
     TASK_NOT_FOUND = "TASK_NOT_FOUND"
@@ -87,6 +88,13 @@ PATH_TRANSITIONS: dict[tuple[TaskState, Trigger], TaskState] = {
 OPEN_TRIGGERS: frozenset[Trigger] = frozenset({Trigger.BLOCK, Trigger.ESCALATE})
 
 RESOLUTION_TRIGGERS: frozenset[Trigger] = frozenset({Trigger.UNBLOCK, Trigger.DECISION_RESUME})
+
+# Triggers that may only fire once the required evidence has actually been
+# recorded in the ledger. Maps the trigger to the evidence record type it needs.
+EVIDENCE_GATED_TRIGGERS: dict[Trigger, str] = {
+    Trigger.OBSERVATIONS_READY: "observation",
+    Trigger.DIAGNOSIS_ACCEPTED: "diagnosis",
+}
 
 ABSORBING: frozenset[TaskState] = frozenset({TaskState.CLOSED, TaskState.ROLLED_BACK})
 

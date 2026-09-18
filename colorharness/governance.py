@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from ._common import APPROVAL_TTL_SECONDS, Trigger, now_utc_iso
+from .black import Diagnosis, Experiment, Hypothesis
 from .eventlog import Event
 from .ledger import EvidenceLedger, EvidenceRecord
 from .observer import FORBIDDEN_INTERPRETATION_KEYS, Observation
@@ -781,6 +782,74 @@ class WhiteTeam:
                 )
             )
         return records
+
+    def record_black_output(
+        self,
+        task_id: str,
+        outputs: tuple,
+        *,
+        actor: str = "white.sys-1",
+        team: str = "white",
+    ) -> list[EvidenceRecord]:
+        """Record black-team interpretations (hypotheses, experiments,
+        diagnoses) as evidence so they are attributable and auditable."""
+        records: list[EvidenceRecord] = []
+        for output in outputs:
+            if isinstance(output, Hypothesis):
+                payload: dict[str, Any] = {
+                    "hypothesis_id": output.hypothesis_id,
+                    "hypothesis": output.hypothesis,
+                    "confidence": output.confidence,
+                    "alternatives": list(output.alternatives),
+                    "discriminator": output.discriminator,
+                    "evidence_refs": list(output.evidence_refs),
+                }
+                record_type = "hypothesis"
+            elif isinstance(output, Experiment):
+                payload = {
+                    "experiment_id": output.experiment_id,
+                    "setup": dict(output.setup),
+                    "inputs_ref": output.inputs_ref,
+                    "result_ref": output.result_ref,
+                    "verified": output.verified,
+                }
+                record_type = "experiment"
+            elif isinstance(output, Diagnosis):
+                payload = {
+                    "diagnosis_id": output.diagnosis_id,
+                    "diagnosis": output.diagnosis,
+                    "confidence": output.confidence,
+                    "evidence_refs": list(output.evidence_refs),
+                    "alternatives": list(output.alternatives),
+                }
+                record_type = "diagnosis"
+            else:
+                raise GovernanceError(
+                    f"unsupported black output type '{output.__class__.__name__}'"
+                )
+            records.append(
+                self.ledger.append(
+                    record_type,
+                    actor=actor,
+                    team=team,
+                    source=f"black://{output.__class__.__name__}",
+                    payload=payload,
+                    task_id=task_id,
+                    refs=tuple(
+                        getattr(output, "evidence_refs", ())
+                        or (getattr(output, "inputs_ref", ""),)
+                    ),
+                )
+            )
+        return records
+
+    def has_evidence(self, task_id: str, record_type: str) -> bool:
+        """True when at least one evidence record of ``record_type`` exists for
+        the task. Used by the coordinator's evidence gates."""
+        return any(
+            r.task_id == task_id and r.record_type == record_type
+            for r in self.ledger.records
+        )
 
     # ------------------------------------------------------------------
     # Audit output

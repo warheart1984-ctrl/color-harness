@@ -25,6 +25,11 @@ diagnosis, and release auditable.
 6. The ledger exposes a whole-store **manifest digest** (sha256 over the JCS
    record list) that is persisted externally. Recomputing the digest against
    the stored anchor detects any alteration or fork of the store.
+7. Coordinator progression is evidence-gated: `OBSERVATIONS_READY` refuses to
+   fire until at least one `observation` record exists for the task, and
+   `DIAGNOSIS_ACCEPTED` until at least one `diagnosis` record exists
+   (`EVIDENCE_NOT_RECORDED`). Phase transitions advance on recorded evidence,
+   not merely on an asserted evidence reference.
 
 ## 2. Evidence record (JSON)
 

@@ -44,7 +44,11 @@ from colorharness.watchdog import (
     SYSTEM_AGENT as WATCHDOG_AGENT,
     Watchdog,
 )
-from tests.test_phase1_coordinator import FULL_PATH, make_registry
+from tests.test_phase1_coordinator import (
+    FULL_PATH,
+    _record_gate_evidence,
+    make_registry,
+)
 
 DEV = {"ci_cd": {"environments": ["staging"]}, "repo": "color-harness"}
 PRIVATE_KEY = "-----BEGIN RSA PRIVATE KEY-----\nMIICdgIBADANBgkqhkiG9w0BAQEFAASCAmA="
@@ -422,6 +426,7 @@ def test_watchdog_escalates_stale_block(tmp_path) -> None:
     for trigger, actor, reason in FULL_PATH:
         if TaskState(c.get_task(task["task_id"])["state"]) == TaskState.DIAGNOSE:
             break
+        _record_gate_evidence(c, task["task_id"], trigger)
         c.apply_transition(task["task_id"], trigger, actor=actor, reason=reason,
                            evidence_refs=(f"log://{reason}",),
                            request_id=f"rid-{reason}-{actor}")
