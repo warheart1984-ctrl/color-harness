@@ -110,6 +110,20 @@ from .purple import (
     PurpleTeamError,
     PurpleUnauthorizedActorError,
 )
+from .gold import (
+    ExceptionGrant,
+    ExceptionRequiresApproval,
+    GoldTeam,
+    GoldTeamError,
+    GoldUnauthorizedActorError,
+    InvalidExceptionError,
+    InvalidStandardError,
+    ReferencePipeline,
+    Standard,
+    UnboundedExceptionRefusedError,
+    VersionConflictError,
+    VERSION_RE,
+)
 
 __all__ = [
     "Coordinator",
@@ -197,4 +211,16 @@ __all__ = [
     "Closure",
     "CLOSURE_VERDICTS",
     "InvalidClosureError",
+    "GoldTeam",
+    "GoldTeamError",
+    "GoldUnauthorizedActorError",
+    "InvalidStandardError",
+    "VersionConflictError",
+    "InvalidExceptionError",
+    "ExceptionRequiresApproval",
+    "UnboundedExceptionRefusedError",
+    "Standard",
+    "ReferencePipeline",
+    "ExceptionGrant",
+    "VERSION_RE",
 ]

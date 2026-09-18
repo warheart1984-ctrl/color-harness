@@ -14,6 +14,7 @@ from typing import Any, Optional
 from ._common import APPROVAL_TTL_SECONDS, Trigger, now_utc_iso
 from .black import Diagnosis, Experiment, Hypothesis
 from .eventlog import Event
+from .gold import ExceptionGrant, ReferencePipeline, Standard
 from .ledger import EvidenceLedger, EvidenceRecord
 from .observer import FORBIDDEN_INTERPRETATION_KEYS, Observation
 from .purple import Closure
@@ -982,6 +983,83 @@ class WhiteTeam:
                     refs=(closure.finding_ref, *closure.re_test_refs),
                 )
             )
+        return records
+
+    def record_gold_output(
+        self,
+        task_id: str,
+        items: tuple[Standard | ReferencePipeline | ExceptionGrant, ...],
+        *,
+        actor: str = "white.sys-1",
+        team: str = "white",
+    ) -> list[EvidenceRecord]:
+        """Record gold-team standards, pipelines, and exceptions as evidence."""
+        records: list[EvidenceRecord] = []
+        for item in items:
+            if isinstance(item, Standard):
+                records.append(
+                    self.ledger.append(
+                        "standard",
+                        actor=actor,
+                        team=team,
+                        source=f"gold://Standard/{item.standard_id}@{item.version}",
+                        payload={
+                            "standard_id": item.standard_id,
+                            "version": item.version,
+                            "title": item.title,
+                            "domain": item.domain,
+                            "policies": list(item.policies),
+                            "rationale": item.rationale,
+                            "supersedes": item.supersedes,
+                        },
+                        task_id=task_id,
+                        refs=((item.supersedes,) if item.supersedes else ())
+                        + item.refs,
+                    )
+                )
+            elif isinstance(item, ReferencePipeline):
+                records.append(
+                    self.ledger.append(
+                        "pipeline",
+                        actor=actor,
+                        team=team,
+                        source=f"gold://ReferencePipeline/{item.pipeline_id}@{item.version}",
+                        payload={
+                            "pipeline_id": item.pipeline_id,
+                            "version": item.version,
+                            "title": item.title,
+                            "stages": list(item.stages),
+                            "triggers": list(item.triggers),
+                        },
+                        task_id=task_id,
+                        refs=item.refs,
+                    )
+                )
+            elif isinstance(item, ExceptionGrant):
+                records.append(
+                    self.ledger.append(
+                        "exception",
+                        actor=actor,
+                        team=team,
+                        source=f"gold://ExceptionGrant/{item.exception_id}",
+                        payload={
+                            "exception_id": item.exception_id,
+                            "standard_ref": item.standard_ref,
+                            "approver": item.approver,
+                            "approval_ref": item.approval_ref,
+                            "scope": item.scope,
+                            "expiry_epoch": item.expiry_epoch,
+                            "reason": item.reason,
+                        },
+                        task_id=task_id,
+                        refs=(item.approval_ref, item.standard_ref),
+                    )
+                )
+            else:
+                raise TypeError(
+                    "record_gold_output accepts Standard, ReferencePipeline, "
+                    "or ExceptionGrant only"
+                )
         return records
 
     def verification_passing(self, task_id: str) -> bool:

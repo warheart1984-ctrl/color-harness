@@ -84,6 +84,9 @@ moment the live store no longer recomputes to the anchor.
 | `test_result` | yellow | command, version, exit status, artifact location |
 | `finding` | red | reproduction steps, impact, severity, remediation recommendation |
 | `remediation` | purple | change/control applied, re-test evidence, closure verdict |
+| `standard` | gold | versioned policy-as-code rules, domain, superseded version |
+| `pipeline` | gold | versioned reference pipeline stages and triggers |
+| `exception` | gold | scoped exception with recorded approval, finite expiry |
 | `approval` | white/coordinator | approver, scope, expiry, gated action |
 | `decision` | white/coordinator | decision type, decider, reasoning, effective scope |
 | `block` | any team | blocking actor, unsatisfied condition, evidence |
@@ -133,6 +136,14 @@ mandatory sub-details of the payload type:
 - `remediation`: `change_ref`, `re_test_ref`, `verdict` (closed|open); also
   recorded are the `controls[]` that close the finding and every `re_test_refs[]`
   that re-verified it. A closure with no re-test evidence is refused.
+- `standard`: `standard_id`, `version` (dotted), `title`, `domain`, `policies[]`
+  (policy-as-code rules); versions are strictly increasing and conflicts are
+  refused. May cite `supersedes` and `refs`.
+- `pipeline`: `pipeline_id`, `version` (dotted), `title`, `stages[]`,
+  `triggers[]`; a reference pipeline needs both stages and triggers.
+- `exception`: `standard_ref`, `approver`, `approval_ref`, `scope`,
+  `expiry_epoch`. Exceptions require a documented approval and a finite expiry
+  in the future; unbounded exceptions are refused.
 - `approval`: `approver`, `approver_role`, `approver_team`, `scope`, `expiry`,
   `gated_action`, `decision_id`, `ttl_seconds`, `issued_epoch`,
   `expires_at_epoch`. The `approver_role` (one of `ci-operator`,
