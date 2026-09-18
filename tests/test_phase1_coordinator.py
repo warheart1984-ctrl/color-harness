@@ -6,6 +6,7 @@ from __future__ import annotations
 from colorharness import Coordinator, Observer, TeamRegistry
 from colorharness.black import BlackTeam
 from colorharness.silver import SilverTeam
+from colorharness.yellow import YellowTeam
 from colorharness._common import (
     RejectionCode,
     TaskState,
@@ -82,6 +83,14 @@ def _record_gate_evidence(c: Coordinator, task_id: str, trigger: Trigger) -> Non
             rollback_metadata={"steps": ["git revert helper"]},
         )
         c.governance.record_silver_output(task_id, (change,))
+    elif trigger == Trigger.VERIFICATION_PASSED:
+        result = YellowTeam(registry=c.registry).run_check(
+            task_id=task_id, actor="yellow.ver-1",
+            check_type="readiness", command="pytest -q", version="pytest 9.1.1",
+            exit_status=0, artifacts_ref="log://helper",
+            evidence_location="report://helper",
+        )
+        c.governance.record_yellow_output(task_id, (result,))
 
 
 def drive_full_path(c: Coordinator, task_id: str, prefix: str = "") -> list[str]:

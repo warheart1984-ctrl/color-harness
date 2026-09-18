@@ -294,6 +294,21 @@ class Coordinator:
                     f"'{required_type}' evidence record for task '{task_id}'",
                 )
 
+        if trigger == Trigger.VERIFICATION_PASSED and self.governance is not None:
+            if not self.governance.has_evidence(task_id, "test_result"):
+                return self._record_rejection(
+                    task, trigger, actor, request_id,
+                    RejectionCode.EVIDENCE_NOT_RECORDED,
+                    f"trigger '{trigger.value}' requires a recorded "
+                    f"'test_result' evidence record for task '{task_id}'",
+                )
+            if not self.governance.verification_passing(task_id):
+                return self._record_rejection(
+                    task, trigger, actor, request_id,
+                    RejectionCode.VERIFICATION_FAILED,
+                    "at least one recorded test result for the task has failed",
+                )
+
         new_state = resolve_next_state(current, trigger, resume_state)
         if new_state is None:
             return self._record_rejection(

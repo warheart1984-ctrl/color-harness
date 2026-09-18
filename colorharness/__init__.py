@@ -81,6 +81,16 @@ from .silver import (
     SilverTeamError,
     SilverUnauthorizedActorError,
 )
+from .yellow import (
+    CHECK_TYPES,
+    InvalidCheckError,
+    SelfApprovalError,
+    VerificationResult,
+    YellowNoEvidenceError,
+    YellowTeam,
+    YellowTeamError,
+    YellowUnauthorizedActorError,
+)
 
 __all__ = [
     "Coordinator",
@@ -145,4 +155,12 @@ __all__ = [
     "InvalidImplementationError",
     "ChangeManifest",
     "SILVER_CHANGE_TYPES",
+    "YellowTeam",
+    "YellowTeamError",
+    "YellowNoEvidenceError",
+    "YellowUnauthorizedActorError",
+    "InvalidCheckError",
+    "SelfApprovalError",
+    "VerificationResult",
+    "CHECK_TYPES",
 ]

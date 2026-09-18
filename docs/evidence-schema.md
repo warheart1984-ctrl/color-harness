@@ -29,8 +29,10 @@ diagnosis, and release auditable.
    fire until at least one `observation` record exists for the task,
    `DIAGNOSIS_ACCEPTED` until at least one `diagnosis` record exists, and
    `IMPLEMENTATION_READY` until at least one `change` record exists
-   (`EVIDENCE_NOT_RECORDED`). Phase transitions advance on recorded evidence,
-   not merely on an asserted evidence reference.
+   (`EVIDENCE_NOT_RECORDED`). `VERIFICATION_PASSED` additionally refuses while
+   any recorded `test_result` has failed (`VERIFICATION_FAILED`; failed checks
+   block). Phase transitions advance on recorded evidence, not merely on an
+   asserted evidence reference.
 
 ## 2. Evidence record (JSON)
 
@@ -120,8 +122,10 @@ mandatory sub-details of the payload type:
   `plan_refs[]` (the plan evidence the implementation cites), and non-empty
   `rollback_metadata`. Silver never merges or deploys; secrets never appear in
   an implementation payload.
-- `test_result`: `command`, `version`, `exit_status`, `artifacts_ref`,
-  `evidence_location`.
+- `test_result`: `check_type` (test|lint|policy|security|smoke|readiness),
+  `command`, `version`, `exit_status` (0 = pass), `artifacts_ref`,
+  `evidence_location`. Results always record the command, the version run, and
+  where the evidence lives.
 - `finding`: `reproduction[]`, `impact`, `severity`,
   `remediation_recommendation`.
 - `remediation`: `change_ref`, `re_test_ref`, `verdict` (closed|open).

@@ -20,6 +20,7 @@ from .registry import APPROVER_ROLES, TeamRegistry
 from .risk import RiskClass, is_higher, normalize
 from .scope import ScopeOutOfBoundsError, validate_scope
 from .silver import ChangeManifest
+from .yellow import VerificationResult
 
 GOVERNED_ACTIONS: dict[Trigger, str] = {
     Trigger.RELEASE_APPROVED: "release",
@@ -878,6 +879,51 @@ class WhiteTeam:
                 )
             )
         return records
+
+    def record_yellow_output(
+        self,
+        task_id: str,
+        results: tuple[VerificationResult, ...],
+        *,
+        actor: str = "white.sys-1",
+        team: str = "white",
+    ) -> list[EvidenceRecord]:
+        """Record yellow-team verification results as `test_result` evidence."""
+        records: list[EvidenceRecord] = []
+        for result in results:
+            records.append(
+                self.ledger.append(
+                    "test_result",
+                    actor=actor,
+                    team=team,
+                    source=f"yellow://VerificationResult/{result.result_id}",
+                    payload={
+                        "result_id": result.result_id,
+                        "check_type": result.check_type,
+                        "command": result.command,
+                        "version": result.version,
+                        "exit_status": result.exit_status,
+                        "artifacts_ref": result.artifacts_ref,
+                        "evidence_location": result.evidence_location,
+                    },
+                    task_id=task_id,
+                    refs=(result.artifacts_ref,),
+                )
+            )
+        return records
+
+    def verification_passing(self, task_id: str) -> bool:
+        """True when the task has at least one recorded test_result and none
+        of its recorded results failed (failed checks block progression)."""
+        results = [
+            r for r in self.ledger.records
+            if r.task_id == task_id and r.record_type == "test_result"
+        ]
+        if not results:
+            return False
+        return all(
+            (r.payload or {}).get("exit_status") == 0 for r in results
+        )
 
     def has_evidence(self, task_id: str, record_type: str) -> bool:
         """True when at least one evidence record of ``record_type`` exists for
