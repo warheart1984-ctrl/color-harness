@@ -15,6 +15,7 @@ from ._common import APPROVAL_TTL_SECONDS, Trigger, now_utc_iso
 from .black import Diagnosis, Experiment, Hypothesis
 from .eventlog import Event
 from .gold import ExceptionGrant, ReferencePipeline, Standard
+from .green import Release, Rollback
 from .ledger import EvidenceLedger, EvidenceRecord
 from .observer import FORBIDDEN_INTERPRETATION_KEYS, Observation
 from .purple import Closure
@@ -1062,6 +1063,58 @@ class WhiteTeam:
                 )
         return records
 
+    def record_green_output(
+        self,
+        task_id: str,
+        items: tuple[Release | Rollback, ...],
+        *,
+        actor: str = "white.sys-1",
+        team: str = "white",
+    ) -> list[EvidenceRecord]:
+        """Record green-team releases and rollbacks as evidence."""
+        records: list[EvidenceRecord] = []
+        for item in items:
+            if isinstance(item, Release):
+                records.append(
+                    self.ledger.append(
+                        "release",
+                        actor=actor,
+                        team=team,
+                        source=f"green://Release/{item.release_id}",
+                        payload={
+                            "release_id": item.release_id,
+                            "artifact_ref": item.artifact_ref,
+                            "target_environment": item.target_environment,
+                            "plan_ref": item.plan_ref,
+                            "approval_refs": list(item.approval_refs),
+                        },
+                        task_id=task_id,
+                        refs=(item.plan_ref, *item.approval_refs),
+                    )
+                )
+            elif isinstance(item, Rollback):
+                records.append(
+                    self.ledger.append(
+                        "rollback",
+                        actor=actor,
+                        team=team,
+                        source=f"green://Rollback/{item.rollback_id}",
+                        payload={
+                            "rollback_id": item.rollback_id,
+                            "release_ref": item.release_ref,
+                            "steps": list(item.steps),
+                            "reason": item.reason,
+                        },
+                        task_id=task_id,
+                        refs=(item.release_ref,),
+                    )
+                )
+            else:
+                raise TypeError(
+                    "record_green_output accepts Release or Rollback only"
+                )
+        return records
+
     def verification_passing(self, task_id: str) -> bool:
         """True when the task has at least one recorded test_result and none
         of its recorded results failed (failed checks block progression)."""
@@ -1081,6 +1134,16 @@ class WhiteTeam:
         return any(
             r.task_id == task_id and r.record_type == record_type
             for r in self.ledger.records
+        )
+
+    def valid_approval_refs(self, task_id: str, gated_action: str) -> tuple[str, ...]:
+        """Approval ids that are currently valid for the gated action. Green
+        must cite these in release evidence; stale or revoked approvals never
+        count."""
+        return tuple(
+            aid
+            for aid in sorted(self._approvals)
+            if self.approval_valid(aid, task_id, gated_action)
         )
 
     # ------------------------------------------------------------------

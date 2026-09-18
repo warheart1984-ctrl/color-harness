@@ -55,6 +55,7 @@ PAYLOAD_REQUIREMENTS: dict[str, frozenset[str]] = {
     "decision": frozenset({"decision_type", "decider", "reasoning", "scope"}),
     "block": frozenset({"reason_code", "condition", "evidence_refs"}),
     "release": frozenset({"artifact_ref", "target_environment", "plan_ref", "approval_refs"}),
+    "rollback": frozenset({"release_ref", "steps", "reason"}),
     "scope_declaration": frozenset({"declared_by", "scope", "risk"}),
     "pause": frozenset({"actor", "reason"}),
 }
