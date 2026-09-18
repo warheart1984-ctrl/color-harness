@@ -13,7 +13,8 @@ from typing import Any, Optional
 
 from ._common import APPROVAL_TTL_SECONDS, Trigger, now_utc_iso
 from .eventlog import Event
-from .ledger import EvidenceLedger
+from .ledger import EvidenceLedger, EvidenceRecord
+from .observer import FORBIDDEN_INTERPRETATION_KEYS, Observation
 from .registry import APPROVER_ROLES, TeamRegistry
 from .risk import RiskClass, is_higher, normalize
 from .scope import ScopeOutOfBoundsError, validate_scope
@@ -74,6 +75,10 @@ class AmbiguousRoleError(GovernanceError):
 
 
 class RoleRiskForbidden(GovernanceError):
+    pass
+
+
+class InterpretationNotRecordedError(GovernanceError):
     pass
 
 
@@ -679,6 +684,103 @@ class WhiteTeam:
             refs=tuple(event.evidence_refs),
             event_id=event.event_id,
         )
+
+    # ------------------------------------------------------------------
+    # Observer / Blue write paths (governed by White)
+    # ------------------------------------------------------------------
+
+    def record_observations(
+        self,
+        task_id: str,
+        observations: tuple[Observation, ...],
+        *,
+        actor: str = "white.sys-1",
+        team: str = "white",
+    ) -> list[EvidenceRecord]:
+        """Record collected facts as observation evidence. White owns the write;
+        the observer itself holds no ledger handle."""
+        records: list[EvidenceRecord] = []
+        for obs in observations:
+            forbidden = set(obs.detail) & FORBIDDEN_INTERPRETATION_KEYS
+            if forbidden:
+                raise InterpretationNotRecordedError(
+                    f"observation '{obs.observation_id}' carries interpretation "
+                    f"keys {sorted(forbidden)}; facts and interpretations are "
+                    "stored separately"
+                )
+            record = self.ledger.append(
+                "observation",
+                actor=actor,
+                team=team,
+                source=obs.source,
+                payload=obs.payload(),
+                task_id=task_id,
+                correlation_id=obs.correlation_id,
+                refs=(obs.observation_id,),
+            )
+            records.append(record)
+        return records
+
+    def record_blue_output(
+        self,
+        task_id: str,
+        outputs: tuple,
+        *,
+        actor: str = "white.sys-1",
+        team: str = "white",
+    ) -> list[EvidenceRecord]:
+        """Record blue-team interpretations (alerts, recommendations, runbook
+        entries) as evidence so they are auditable and attributable."""
+        records: list[EvidenceRecord] = []
+        for output in outputs:
+            kind = type(output).__name__.lower()
+            if kind == "alert":
+                payload: dict[str, Any] = {
+                    "alert_id": output.alert_id,
+                    "metric": output.metric,
+                    "observed_value": output.observed_value,
+                    "threshold": output.threshold,
+                    "severity": output.severity,
+                    "observation_refs": list(output.observation_refs),
+                }
+                record_type = "alert"
+            elif kind == "recommendation":
+                payload = {
+                    "recommendation_id": output.recommendation_id,
+                    "recommended_action": output.recommended_action,
+                    "rationale": output.rationale,
+                    "severity": output.severity,
+                    "evidence_refs": list(output.evidence_refs),
+                }
+                record_type = "recommendation"
+            elif kind == "runbookentry":
+                payload = {
+                    "entry_id": output.entry_id,
+                    "procedure": output.procedure,
+                    "severity": output.severity,
+                    "source_refs": list(output.source_refs),
+                }
+                record_type = "runbook_entry"
+            else:
+                raise GovernanceError(
+                    f"unsupported blue output type '{kind}'"
+                )
+            records.append(
+                self.ledger.append(
+                    record_type,
+                    actor=actor,
+                    team=team,
+                    source=f"blue://{output.__class__.__name__}",
+                    payload=payload,
+                    task_id=task_id,
+                    refs=tuple(
+                        getattr(output, "evidence_refs", ())
+                        or getattr(output, "observation_refs", ())
+                        or getattr(output, "source_refs", ())
+                    ),
+                )
+            )
+        return records
 
     # ------------------------------------------------------------------
     # Audit output

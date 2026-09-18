@@ -38,6 +38,9 @@ def sha256_hex(text: str) -> str:
 PAYLOAD_REQUIREMENTS: dict[str, frozenset[str]] = {
     "transition": frozenset({"previous_state", "new_state", "trigger", "reason_code"}),
     "observation": frozenset({"observation_type", "detail"}),
+    "alert": frozenset({"metric", "observed_value", "threshold", "severity", "observation_refs"}),
+    "recommendation": frozenset({"recommended_action", "rationale", "severity", "evidence_refs"}),
+    "runbook_entry": frozenset({"procedure", "severity", "source_refs"}),
     "hypothesis": frozenset({"hypothesis", "confidence", "alternatives", "discriminator"}),
     "experiment": frozenset({"setup", "inputs_ref", "result_ref", "verified"}),
     "diagnosis": frozenset({"diagnosis", "confidence", "evidence_refs", "alternatives"}),

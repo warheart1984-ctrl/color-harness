@@ -40,6 +40,25 @@ from .governance import (
 from .secrets import SecretExposureError
 from .scope import ScopeOutOfBoundsError, validate_scope
 from .watchdog import Watchdog
+from .observer import (
+    FORBIDDEN_INTERPRETATION_KEYS,
+    OBSERVATION_TYPES,
+    InterpretationInObservationError,
+    Observation,
+    ObservationTypeError,
+    Observer,
+    ObserverError,
+)
+from .blue import (
+    Alert,
+    AlertConditionError,
+    BlueTeam,
+    BlueTeamError,
+    NoEvidenceError,
+    Recommendation,
+    RunbookEntry,
+    UnauthorizedActorError,
+)
 
 __all__ = [
     "Coordinator",
@@ -71,4 +90,19 @@ __all__ = [
     "ScopeOutOfBoundsError",
     "validate_scope",
     "Watchdog",
+    "Observer",
+    "ObserverError",
+    "ObservationTypeError",
+    "InterpretationInObservationError",
+    "Observation",
+    "OBSERVATION_TYPES",
+    "FORBIDDEN_INTERPRETATION_KEYS",
+    "BlueTeam",
+    "BlueTeamError",
+    "Alert",
+    "AlertConditionError",
+    "Recommendation",
+    "RunbookEntry",
+    "NoEvidenceError",
+    "UnauthorizedActorError",
 ]

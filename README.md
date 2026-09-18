@@ -86,11 +86,14 @@ tests/
   test_phase0b_hardening.py
   test_phase1_coordinator.py
   test_phase2_governance.py
+  test_phase3_observer_blue.py
 colorharness/            color-team coordinator + task state machine (Phase 1)
                          + White Team governance: scope, risk, approvals,
                          evidence ledger, audit (Phase 2)
                          + hardening: scope allowlist, secret scanner,
                          reviewer roles/quorum, watchdog, ledger manifest
+                         + Observer (read-only facts) + Blue Team (monitoring,
+                         alerts, recommendations, runbooks) (Phase 3)
 athp/                    RFC-0042 harness (moon_base, server, lifecycle, conformance)
 ```
 

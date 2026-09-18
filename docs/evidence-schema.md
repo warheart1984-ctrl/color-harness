@@ -66,6 +66,9 @@ moment the live store no longer recomputes to the anchor.
 | --- | --- | --- |
 | `transition` | coordinator | current state, new state, trigger, reason code |
 | `observation` | observer / blue | collected fact (logs, metrics, CI result, health, dependencies) |
+| `alert` | blue | metric, observed value, threshold crossed, severity, source observations |
+| `recommendation` | blue | recommended action, rationale, severity, cited evidence |
+| `runbook_entry` | blue | proposed procedure, severity, source evidence |
 | `hypothesis` | black | hypothesis text, confidence, alternatives, discriminator |
 | `experiment` | black | controlled experiment, inputs, result |
 | `diagnosis` | black | diagnosis, confidence, evidence references, alternatives |
@@ -95,6 +98,12 @@ mandatory sub-details of the payload type:
 - `observation`: `observation_type` (logs|metrics|health|ci|dependency|
   repo_state|changes), `detail`, `interpretation` **must be null or absent** —
   facts and interpretations are stored separately.
+- `alert`: `metric`, `observed_value` (number), `threshold` (number),
+  `severity` (warning|critical), `observation_refs[]` — the facts that fired it.
+- `recommendation`: `recommended_action`, `rationale`, `severity`,
+  `evidence_refs[]` — non-empty; a recommendation must cite its evidence.
+- `runbook_entry`: `procedure`, `severity`, `source_refs[]` — non-empty; runbook
+  proposals are never writes and always cite their source.
 - `hypothesis`: `hypothesis`, `confidence` (Low|Medium|High),
   `alternatives[]`, `discriminator`.
 - `experiment`: `setup`, `inputs_ref`, `result_ref`, `verified` (bool).

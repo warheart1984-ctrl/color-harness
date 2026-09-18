@@ -171,3 +171,4 @@ imports ATHP spans as transition records.
 | --- | --- | --- |
 | 2026-09-18 | Adopt task state machine + evidence-ledger model on ATHP harness | pending (Phase 2) |
 | 2026-09-18 | Hardening pass: role-based approval quorum (90-day expiry), DevOps scope allowlist, secret scanning, idempotency fingerprints, watchdog quarantine/escalation, ledger manifest digest | `tests/test_phase0b_hardening.py` + `test_phase1_coordinator.py` + `test_phase2_governance.py` |
+| 2026-09-18 | Observer is read-only (no ledger handle); White Team persists observations + Blue interpretations (`alert`/`recommendation`/`runbook_entry`) as evidence; Blue output must cite evidence | `tests/test_phase3_observer_blue.py` |

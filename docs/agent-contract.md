@@ -104,7 +104,16 @@ document to give a different meaning to a term defined here.
 
 - **observer** — The read-only role that collects factual state (repository
   state, CI results, service health, logs, metrics, dependency status, recent
-  changes) and stores observations separately from interpretations.
+  changes) and stores observations separately from interpretations. The observer
+  holds no ledger handle and no storage path; persisting an observation as
+  evidence is the white team's governed act (`record_observations`).
+
+- **blue team** — Defense and operations: consumes factual observations and
+  produces interpretations — threshold alerts, recommended actions, and runbook
+  proposals — each of which must cite the evidence it is based on. Blue output
+  is recorded as evidence (`alert`, `recommendation`, `runbook_entry`) by the
+  white team so it stays attributable and auditable. Runbook proposals are
+  never writes.
 
 - **transition** — A recorded movement of a task between two task states (or an
   agent between two agent states). Every transition requires a trigger, an
