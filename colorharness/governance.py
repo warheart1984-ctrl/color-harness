@@ -805,8 +805,25 @@ class WhiteTeam:
         for output in outputs:
             kind = type(output).__name__.lower()
             if kind == "alert":
+                if output.task_id != task_id:
+                    raise GovernanceError("alert task does not match persistence task")
+                try:
+                    alert_team = self.registry.team_of(output.actor)
+                except (AttributeError, KeyError) as exc:
+                    raise GovernanceError("alert actor must be a registered Blue agent") from exc
+                if alert_team != "blue":
+                    raise GovernanceError("alert actor must be a registered Blue agent")
+                unresolved = [
+                    ref for ref in output.observation_refs
+                    if not self.reference_resolves(task_id, ref, {"observation"})
+                ]
+                if unresolved:
+                    raise GovernanceError(
+                        f"alert observation references do not resolve for task '{task_id}'"
+                    )
                 payload: dict[str, Any] = {
                     "alert_id": output.alert_id,
+                    "actor": output.actor,
                     "metric": output.metric,
                     "observed_value": output.observed_value,
                     "threshold": output.threshold,
