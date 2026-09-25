@@ -4,6 +4,7 @@ pipelines, and policy exceptions that require documented approval and expiry."""
 from __future__ import annotations
 
 import time
+from dataclasses import replace
 
 import pytest
 
@@ -27,8 +28,18 @@ from tests.test_phase1_coordinator import make_registry
 FUTURE = int(time.time()) + 3600
 
 
-def make_gold(reg: TeamRegistry | None = None) -> GoldTeam:
-    return GoldTeam(registry=reg or make_registry())
+def make_gold(reg: TeamRegistry | None = None, governance=None) -> GoldTeam:
+    return GoldTeam(registry=reg or make_registry(), governance=governance)
+
+
+def make_exception_context(tmp_path):
+    reg = make_registry()
+    gov = WhiteTeam(registry=reg, ledger_path=str(tmp_path / "ledger.jsonl"))
+    approval = gov.record_approval(
+        "task-1", gated_action="policy_exception", approver="black.diag-1",
+        approver_role="security-lead", scope={"repo": "demo"}, author="gold.plan-1",
+    )
+    return reg, gov, approval, make_gold(reg, gov)
 
 
 # ---------------------------------------------------------------------------
@@ -153,46 +164,67 @@ def test_exception_requires_approval() -> None:
         )
 
 
-def test_exception_refuses_unbounded_expiry() -> None:
-    gold = make_gold()
+def test_exception_refuses_unbounded_expiry(tmp_path) -> None:
+    _, _, approval, gold = make_exception_context(tmp_path)
     with pytest.raises(UnboundedExceptionRefusedError):
         gold.grant_exception(
             task_id="task-1", actor="gold.plan-1", standard_ref="std-x@1.0",
-            approver="platform-owner", approval_ref="evt-approval-1",
+            approver="security-lead", approval_ref=approval.approval_id,
             scope="db:staging", expiry_epoch=int(time.time()) - 1,
             reason="expired approval never counts",
         )
     with pytest.raises(UnboundedExceptionRefusedError):
         gold.grant_exception(
             task_id="task-1", actor="gold.plan-1", standard_ref="std-x@1.0",
-            approver="platform-owner", approval_ref="evt-approval-1",
+            approver="security-lead", approval_ref=approval.approval_id,
             scope="db:staging", expiry_epoch=0, reason="zero means no expiry",
         )
 
 
-def test_exception_valid() -> None:
-    exc = make_gold().grant_exception(
+def test_exception_valid(tmp_path) -> None:
+    _, _, approval, gold = make_exception_context(tmp_path)
+    exc = gold.grant_exception(
         task_id="task-1", actor="gold.plan-1", standard_ref="std-x@1.0",
-        approver="platform-owner", approval_ref="evt-approval-1",
+        approver="security-lead", approval_ref=approval.approval_id,
         scope="db:staging", expiry_epoch=FUTURE,
         reason="staging quarantine within the incident window",
     )
     assert isinstance(exc, ExceptionGrant)
     assert exc.scope == "db:staging"
-    assert exc.approval_ref == "evt-approval-1"
+    assert exc.approval_ref == approval.approval_id
 
 
-def test_exception_requires_scope_and_reason() -> None:
-    gold = make_gold()
+def test_gold_rejects_forged_or_self_approved_exception(tmp_path) -> None:
+    _, gov, approval, gold = make_exception_context(tmp_path)
+    with pytest.raises(ExceptionRequiresApproval):
+        gold.grant_exception(
+            task_id="task-1", actor="gold.plan-1", standard_ref="std-x@1.0",
+            approver="security-lead", approval_ref="apr-FAKE", scope="staging",
+            expiry_epoch=FUTURE, reason="forged ref",
+        )
+
+    # Exercise the mint-time guard even if a compromised upstream registry
+    # supplied an otherwise-live approval attributed to the exception author.
+    gov._approvals[approval.approval_id] = replace(approval, approver="gold.plan-1")
+    with pytest.raises(InvalidExceptionError, match="cannot approve their own"):
+        gold.grant_exception(
+            task_id="task-1", actor="gold.plan-1", standard_ref="std-x@1.0",
+            approver="security-lead", approval_ref=approval.approval_id,
+            scope="staging", expiry_epoch=FUTURE, reason="self approval",
+        )
+
+
+def test_exception_requires_scope_and_reason(tmp_path) -> None:
+    _, _, approval, gold = make_exception_context(tmp_path)
     with pytest.raises(InvalidExceptionError):
         gold.grant_exception(task_id="task-1", actor="gold.plan-1",
                              standard_ref="std-x@1.0", approver="a",
-                             approval_ref="ap-1", scope="", expiry_epoch=FUTURE,
+                             approval_ref=approval.approval_id, scope="", expiry_epoch=FUTURE,
                              reason="r")
     with pytest.raises(InvalidExceptionError):
         gold.grant_exception(task_id="task-1", actor="gold.plan-1",
                              standard_ref="std-x@1.0", approver="a",
-                             approval_ref="ap-1", scope="db", expiry_epoch=FUTURE,
+                             approval_ref=approval.approval_id, scope="db", expiry_epoch=FUTURE,
                              reason="")
 
 
@@ -209,7 +241,7 @@ def test_gold_caps_are_policy_write() -> None:
 def test_white_records_gold_output(tmp_path) -> None:
     reg = make_registry()
     gov = WhiteTeam(registry=reg, ledger_path=str(tmp_path / "l.jsonl"))
-    gold = make_gold(reg)
+    gold = make_gold(reg, gov)
     standard = gold.author_standard(
         actor="gold.plan-1", standard_id="std-secrets", title="secrets policy",
         version="1.0", domain="secrets_policy",
