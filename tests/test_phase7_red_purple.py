@@ -67,7 +67,12 @@ def test_report_finding_valid() -> None:
     assert finding.destructive is False
 
 
-@pytest.mark.parametrize("secret", ["ghp_" + "A" * 25, "sk-live-" + "b" * 24])
+@pytest.mark.parametrize("secret", [
+    "ghp_" + "A" * 25,
+    "sk-live-" + "b" * 24,
+    "password=SuperSecret123!",
+    "hmac_secret=ephemeral123",
+])
 def test_finding_rejects_secret_material_at_construction(secret: str) -> None:
     # Exercise direct construction as well as the RedTeam factory path: no
     # unsafe Finding object should escape into caller memory.
@@ -77,10 +82,16 @@ def test_finding_rejects_secret_material_at_construction(secret: str) -> None:
             task_id="task-1",
             actor="red.tar-1",
             title="safe title",
-            reproduction=(f"repro contains {secret}",),
+            reproduction=(
+                ("repro contains " + secret,)
+                if "=" not in secret
+                else ("repro contains secret-shaped credential",)
+            ),
             impact="secret exposure",
             severity="high",
-            remediation_recommendation="remove the credential",
+            remediation_recommendation=(
+                secret if "=" in secret else "remove the credential"
+            ),
             targets=("test-target",),
             techniques=(),
             destructive=False,
@@ -91,8 +102,9 @@ def test_finding_rejects_secret_material_at_construction(secret: str) -> None:
     with pytest.raises(SecretExposureError):
         make_red().report_finding(
             task_id="task-1", actor="red.tar-1",
-            title="finding includes " + secret,
-            reproduction=("1. inspect output",),
+            title=("finding includes " + secret if "=" not in secret else "safe title"),
+            reproduction=(("1. output " + secret,)
+                          if "=" in secret else ("1. inspect output",)),
             impact="credential could be exposed",
             severity="high",
             remediation_recommendation="rotate credential",
