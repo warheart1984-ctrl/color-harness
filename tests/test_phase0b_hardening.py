@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import time
 
+import pytest
+
 from colorharness import (
     Coordinator,
     EvidenceLedger,
@@ -22,6 +24,7 @@ from colorharness.eventlog import (
 )
 from colorharness.governance import (
     AmbiguousRoleError,
+    GovernanceError,
     RoleRequiredError,
     RoleRiskForbidden,
 )
@@ -457,11 +460,11 @@ def test_quarantined_agent_rejected(tmp_path) -> None:
     wd = Watchdog()
     reg = make_registry()
     c = Coordinator(registry=reg, store_path=str(tmp_path / "e.jsonl"), watchdog=wd,
-                    governance=WhiteTeam(registry=reg))
+                    governance=WhiteTeam(registry=reg, ledger_path=str(tmp_path / "ledger.jsonl")))
     task = c.create_task(title="t", scope={"repo": "r"})
     c.apply_transition(task["task_id"], Trigger.ROUTE, actor=Coordinator.SYSTEM_AGENT,
                        reason="route", evidence_refs=("x",), request_id="r-route")
-    wd.quarantine("blue.obs-1", reason="runaway loop")
+    wd.quarantine("blue.obs-1", actor="white.sys-1", reason="runaway loop")
     result = c.apply_transition(
         task["task_id"], Trigger.OBSERVATIONS_READY, actor="blue.obs-1",
         reason="obs", evidence_refs=("x",), request_id="r-obs",
@@ -469,6 +472,47 @@ def test_quarantined_agent_rejected(tmp_path) -> None:
     assert result["success"] is False
     assert result["error"]["code"] == RejectionCode.AGENT_QUARANTINED.value
     assert c.get_task(task["task_id"])["state"] == TaskState.OBSERVE.value
+
+
+def test_watchdog_auto_quarantines_stale_actor_and_restores_from_ledger(tmp_path) -> None:
+    now = [1_000.0]
+    reg = make_registry()
+    ledger_path = str(tmp_path / "ledger.jsonl")
+    store_path = str(tmp_path / "events.jsonl")
+    gov = WhiteTeam(registry=reg, ledger_path=ledger_path)
+    wd = Watchdog(now_fn=lambda: now[0])
+    c = Coordinator(registry=reg, store_path=store_path, governance=gov, watchdog=wd)
+    task = c.create_task(title="watchdog", scope={"repo": "r"})
+    c.apply_transition(task["task_id"], Trigger.ROUTE, actor=Coordinator.SYSTEM_AGENT,
+                       reason="route", evidence_refs=("x",), request_id="r-route")
+    wd.heartbeat("blue.obs-1", now=now[0])
+    now[0] += 4 * 60
+
+    result = c.apply_transition(
+        task["task_id"], Trigger.OBSERVATIONS_READY, actor="blue.obs-1",
+        reason="stale actor", evidence_refs=("x",), request_id="r-stale",
+    )
+    assert result["error"]["code"] == RejectionCode.AGENT_QUARANTINED.value
+    assert wd.is_quarantined("blue.obs-1")
+    quarantine_records = [
+        r for r in gov.ledger.records
+        if r.record_type == "decision" and r.payload.get("decision_type") == "watchdog_quarantine"
+    ]
+    assert quarantine_records
+
+    wd2 = Watchdog(now_fn=lambda: now[0])
+    gov2 = WhiteTeam(registry=reg, ledger_path=ledger_path)
+    Coordinator(registry=reg, store_path=store_path, governance=gov2, watchdog=wd2)
+    assert wd2.is_quarantined("blue.obs-1")
+    with pytest.raises(GovernanceError):
+        wd2.unquarantine("blue.obs-1", actor="red.tar-1")
+    assert wd2.is_quarantined("blue.obs-1")
+    wd2.unquarantine("blue.obs-1", actor="white.sys-1", reason="recovery reviewed")
+    assert not wd2.is_quarantined("blue.obs-1")
+    wd3 = Watchdog(now_fn=lambda: now[0])
+    gov3 = WhiteTeam(registry=reg, ledger_path=ledger_path)
+    Coordinator(registry=reg, store_path=store_path, governance=gov3, watchdog=wd3)
+    assert not wd3.is_quarantined("blue.obs-1")
 
 
 def test_watchdog_escalates_stale_block(tmp_path) -> None:
