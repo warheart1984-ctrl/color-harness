@@ -79,13 +79,19 @@ def test_staging_release_requires_rollback_ready_plan(tmp_path) -> None:
     assert [record.record_type for record in records] == ["release", "rollback"]
 
 
-def test_watchdog_quarantines_and_recovers_agent() -> None:
+def test_watchdog_quarantines_and_recovers_agent(tmp_path) -> None:
+    registry = make_registry()
     watchdog = Watchdog(now_fn=lambda: 1000.0)
-    watchdog.heartbeat("green.rel-1", now=0.0)
+    governance = WhiteTeam(registry=registry, ledger_path=str(tmp_path / "ledger.jsonl"))
+    Coordinator(registry=registry, store_path=str(tmp_path / "events.jsonl"),
+                governance=governance, watchdog=watchdog)
+    watchdog.heartbeat("green.rel-1", actor="green.rel-1", now=0.0)
     assert watchdog.is_stale("green.rel-1", interval_seconds=60, now=181.0)
-    watchdog.quarantine("green.rel-1", reason="missed heartbeats")
     assert watchdog.is_quarantined("green.rel-1")
-    watchdog.unquarantine("green.rel-1")
+    watchdog.quarantine("green.rel-1", actor="white.sys-1", reason="manual review")
+    assert watchdog.is_quarantined("green.rel-1")
+    watchdog.heartbeat("green.rel-1", actor="green.rel-1", now=1000.0)
+    watchdog.unquarantine("green.rel-1", actor="white.sys-1")
     assert not watchdog.is_quarantined("green.rel-1")
 
 

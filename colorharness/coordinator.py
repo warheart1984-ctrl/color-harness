@@ -65,6 +65,8 @@ class Coordinator:
             )
         if watchdog is not None and not self.registry.is_registered(WATCHDOG_SYSTEM_AGENT):
             self.registry.register(WATCHDOG_SYSTEM_AGENT, "observer")
+        if watchdog is not None:
+            watchdog.bind(registry=self.registry, governance=governance)
         self.watchdog = watchdog
         self.governance = governance
         self.log = EventLog(store_path)
