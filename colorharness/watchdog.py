@@ -73,7 +73,12 @@ class Watchdog:
     # Heartbeats
     # ------------------------------------------------------------------
 
-    def heartbeat(self, agent_id: str, *, now: Optional[float] = None) -> None:
+    def heartbeat(
+        self, agent_id: str, *, actor: str, now: Optional[float] = None
+    ) -> None:
+        self._require_bound()
+        if actor != agent_id or not self.registry.is_registered(agent_id):
+            raise GovernanceError("heartbeat must be submitted by its registered agent")
         self._heartbeats[agent_id] = now if now is not None else self._now()
 
     def last_heartbeat(self, agent_id: str) -> Optional[float]:

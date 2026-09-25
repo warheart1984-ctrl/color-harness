@@ -446,11 +446,16 @@ def test_replayed_transition_after_restart_returns_cached(tmp_path) -> None:
 # Watchdog: quarantine + stale-block escalation
 # ---------------------------------------------------------------------------
 
-def test_watchdog_heartbeat_and_staleness() -> None:
+def test_watchdog_heartbeat_and_staleness(tmp_path) -> None:
+    reg = make_registry()
+    reg.register("y", "blue")
     wd = Watchdog(now_fn=lambda: 1_000.0)
+    Coordinator(registry=reg, governance=WhiteTeam(
+        registry=reg, ledger_path=str(tmp_path / "ledger.jsonl")
+    ), watchdog=wd)
     assert wd.last_heartbeat("y") is None
     assert wd.missed_heartbeats("y") == HEARTBEAT_MISSES_THRESHOLD + 1
-    wd.heartbeat("y", now=1_000.0)
+    wd.heartbeat("y", actor="y", now=1_000.0)
     assert wd.missed_heartbeats("y", now=1_000.0) == 0
     assert wd.missed_heartbeats("y", now=1_000.0 + 3 * 60) == 2
     assert wd.is_stale("y", now=1_000.0 + 4 * 60)
@@ -485,7 +490,7 @@ def test_watchdog_auto_quarantines_stale_actor_and_restores_from_ledger(tmp_path
     task = c.create_task(title="watchdog", scope={"repo": "r"})
     c.apply_transition(task["task_id"], Trigger.ROUTE, actor=Coordinator.SYSTEM_AGENT,
                        reason="route", evidence_refs=("x",), request_id="r-route")
-    wd.heartbeat("blue.obs-1", now=now[0])
+    wd.heartbeat("blue.obs-1", actor="blue.obs-1", now=now[0])
     now[0] += 4 * 60
 
     result = c.apply_transition(
@@ -507,6 +512,8 @@ def test_watchdog_auto_quarantines_stale_actor_and_restores_from_ledger(tmp_path
     with pytest.raises(GovernanceError):
         wd2.unquarantine("blue.obs-1", actor="red.tar-1")
     assert wd2.is_quarantined("blue.obs-1")
+    with pytest.raises(GovernanceError):
+        wd2.heartbeat("blue.obs-1", actor="red.tar-1", now=now[0])
     wd2.unquarantine("blue.obs-1", actor="white.sys-1", reason="recovery reviewed")
     assert not wd2.is_quarantined("blue.obs-1")
     wd3 = Watchdog(now_fn=lambda: now[0])

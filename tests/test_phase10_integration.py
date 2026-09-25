@@ -85,12 +85,12 @@ def test_watchdog_quarantines_and_recovers_agent(tmp_path) -> None:
     governance = WhiteTeam(registry=registry, ledger_path=str(tmp_path / "ledger.jsonl"))
     Coordinator(registry=registry, store_path=str(tmp_path / "events.jsonl"),
                 governance=governance, watchdog=watchdog)
-    watchdog.heartbeat("green.rel-1", now=0.0)
+    watchdog.heartbeat("green.rel-1", actor="green.rel-1", now=0.0)
     assert watchdog.is_stale("green.rel-1", interval_seconds=60, now=181.0)
     assert watchdog.is_quarantined("green.rel-1")
     watchdog.quarantine("green.rel-1", actor="white.sys-1", reason="manual review")
     assert watchdog.is_quarantined("green.rel-1")
-    watchdog.heartbeat("green.rel-1", now=1000.0)
+    watchdog.heartbeat("green.rel-1", actor="green.rel-1", now=1000.0)
     watchdog.unquarantine("green.rel-1", actor="white.sys-1")
     assert not watchdog.is_quarantined("green.rel-1")
 
