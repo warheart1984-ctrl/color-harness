@@ -73,6 +73,7 @@ def test_report_finding_valid() -> None:
     "password=SuperSecret123!",
     "hmac_secret=ephemeral123",
     "secret_value=ephemeral123",
+    "hmacSecret=ephemeral123",
 ])
 def test_finding_rejects_secret_material_at_construction(secret: str) -> None:
     # Exercise direct construction as well as the RedTeam factory path: no

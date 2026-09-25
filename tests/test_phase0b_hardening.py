@@ -126,6 +126,9 @@ def test_secret_patterns_detected() -> None:
     assert "credential_assignment" in scan_for_secrets("auth_token=ephemeral123")
     assert "credential_assignment" in scan_for_secrets("secret_value=ephemeral123")
     assert "credential_assignment" in scan_for_secrets("signing_key=ephemeral123")
+    assert "credential_assignment" in scan_for_secrets("hmacSecret=ephemeral123")
+    assert "credential_assignment" in scan_for_secrets("authToken=ephemeral123")
+    assert "credential_assignment" in scan_for_secrets("secretValue=ephemeral123")
     assert scan_for_secrets("password reset required") == []
     assert scan_for_secrets("set password before login") == []
     assert scan_for_secrets("password_reset_required=true") == []
