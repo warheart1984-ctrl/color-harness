@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from ._common import now_utc_iso
+from .secrets import raise_if_secret
 
 FINDING_SEVERITIES: frozenset[str] = frozenset(
     {"low", "medium", "high", "critical"}
@@ -60,6 +61,23 @@ class Finding:
     timestamp: str
 
     def __post_init__(self) -> None:
+        # Findings remain in memory before White persists them. Reject secret
+        # material here as well as at the ledger boundary so callers cannot
+        # retain or forward an unsafe Finding after persistence is refused.
+        raise_if_secret((
+            self.finding_id,
+            self.task_id,
+            self.actor,
+            self.title,
+            self.reproduction,
+            self.impact,
+            self.severity,
+            self.remediation_recommendation,
+            self.targets,
+            self.techniques,
+            self.approval_refs,
+            self.timestamp,
+        ))
         if not self.title.strip():
             raise InvalidFindingError("a finding needs a title")
         if not self.reproduction:
