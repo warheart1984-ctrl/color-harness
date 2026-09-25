@@ -55,12 +55,19 @@ class Recommendation:
 class Alert:
     alert_id: str
     task_id: str
+    actor: str
     metric: str
     observed_value: float
     threshold: float
     severity: str
     observation_refs: tuple[str, ...]
     timestamp: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.actor, str) or not self.actor.strip():
+            raise UnauthorizedActorError("an alert requires an actor")
+        if not self.observation_refs:
+            raise NoEvidenceError("an alert must cite at least one observation")
 
 
 @dataclass(frozen=True)
@@ -133,6 +140,7 @@ class BlueTeam:
         self,
         *,
         task_id: str,
+        actor: str,
         observations: tuple[Observation, ...],
         thresholds: dict[str, tuple[float, float]],
     ) -> list[Alert]:
@@ -140,8 +148,11 @@ class BlueTeam:
 
         Only *facts* fire alerts; each alert cites its source observation.
         """
+        self._check_actor(actor)
         alerts: list[Alert] = []
         for obs in observations:
+            if obs.task_id != task_id:
+                raise BlueTeamError("monitor observations must belong to the requested task")
             if obs.observation_type != "metrics":
                 continue
             metric = obs.detail.get("metric")
@@ -166,6 +177,7 @@ class BlueTeam:
                 Alert(
                     alert_id=f"alt-{uuid.uuid4().hex[:12]}",
                     task_id=task_id,
+                    actor=actor,
                     metric=metric,
                     observed_value=value,
                     threshold=level,

@@ -20,6 +20,7 @@ from colorharness import (
 )
 from colorharness.blue import BlueTeamError, NoEvidenceError, UnauthorizedActorError
 from colorharness._common import Trigger
+from colorharness.governance import GovernanceError
 from colorharness.observer import (
     InterpretationInObservationError,
     ObservationTypeError,
@@ -183,6 +184,7 @@ def test_blue_monitor_fires_warning_and_critical() -> None:
                           source="metrics://app")
     alerts = make_blue().monitor(
         task_id="task-1",
+        actor="blue.obs-1",
         observations=(warn, critical, healthy),
         thresholds={"error_rate": (0.05, 0.10), "latency_p99": (500.0, 1000.0)},
     )
@@ -231,12 +233,15 @@ def test_blue_draft_runbook_requires_actor_and_source() -> None:
 def test_white_records_blue_output(tmp_path) -> None:
     gov = WhiteTeam(registry=make_registry(), ledger_path=str(tmp_path / "l.jsonl"))
     blue = make_blue()
+    obs = make_observer().collect(
+        task_id="task-1", observation_type="metrics",
+        detail={"metric": "error_rate", "value": 0.12}, source="metrics://app",
+    )
+    gov.record_observations("task-1", (obs,))
     alert = blue.monitor(
         task_id="task-1",
-        observations=(make_observer().collect(
-            task_id="task-1", observation_type="metrics",
-            detail={"metric": "error_rate", "value": 0.12}, source="metrics://app",
-        ),),
+        actor="blue.obs-1",
+        observations=(obs,),
         thresholds={"error_rate": (0.05, 0.10)},
     )[0]
     rec = blue.recommend(task_id="task-1", actor="blue.obs-1",
@@ -250,6 +255,7 @@ def test_white_records_blue_output(tmp_path) -> None:
     kinds = sorted(r.record_type for r in records)
     assert kinds == ["alert", "recommendation", "runbook_entry"]
     alert_record = [r for r in records if r.record_type == "alert"][0]
+    assert alert_record.payload["actor"] == "blue.obs-1"
     assert alert_record.payload["metric"] == "error_rate"
     assert alert_record.payload["observed_value"] == 0.12
     assert alert_record.payload["severity"] == "critical"
@@ -266,7 +272,7 @@ def test_blue_observation_to_alert_evidence_chain(tmp_path) -> None:
     )
     gov.record_observations("task-1", (obs,))
     alert = make_blue().monitor(
-        task_id="task-1", observations=(obs,),
+        task_id="task-1", actor="blue.obs-1", observations=(obs,),
         thresholds={"error_rate": (0.05, 0.10)},
     )[0]
     gov.record_blue_output("task-1", (alert,))
@@ -276,6 +282,31 @@ def test_blue_observation_to_alert_evidence_chain(tmp_path) -> None:
     assert gov.ledger.verify_chain()
     assert gov.ledger.verify_manifest(gov.ledger.manifest_digest())
     assert gov.ledger.manifest_digest() != before
+
+
+def test_white_rejects_forged_alert_observation_reference(tmp_path) -> None:
+    reg = make_registry()
+    gov = WhiteTeam(registry=reg, ledger_path=str(tmp_path / "ledger.jsonl"))
+    alert = Alert(
+        alert_id="alt-forged", task_id="task-1", actor="blue.obs-1",
+        metric="error_rate", observed_value=1.0, threshold=0.1,
+        severity="critical", observation_refs=("obs-FAKE",), timestamp="now",
+    )
+    with pytest.raises(GovernanceError, match="observation references do not resolve"):
+        gov.record_blue_output("task-1", (alert,))
+    assert len(gov.ledger) == 0
+
+
+def test_blue_monitor_requires_registered_blue_actor() -> None:
+    obs = make_observer().collect(
+        task_id="task-1", observation_type="metrics",
+        detail={"metric": "error_rate", "value": 0.12},
+    )
+    with pytest.raises(UnauthorizedActorError):
+        make_blue().monitor(
+            task_id="task-1", actor="red.tar-1", observations=(obs,),
+            thresholds={"error_rate": (0.05, 0.10)},
+        )
 
 
 def test_blue_output_requires_supported_objects(tmp_path) -> None:
@@ -311,7 +342,7 @@ def test_phase3_end_to_end(tmp_path) -> None:
     obs_records = gov.record_observations(task["task_id"], (obs,))
 
     alerts = make_blue().monitor(
-        task_id=task["task_id"], observations=(obs,),
+        task_id=task["task_id"], actor="blue.obs-1", observations=(obs,),
         thresholds={"error_rate": (0.05, 0.10)},
     )
     assert alerts == []
