@@ -1,4 +1,4 @@
-"""Secret scanning: sk-, ghp_, AKIA, and private-key headers -> SECRET_EXPOSURE."""
+"""Secret scanning for credential fingerprints and assignment-shaped values."""
 
 from __future__ import annotations
 
@@ -20,6 +20,15 @@ SECRET_PATTERNS: dict[str, re.Pattern] = {
     "slack_bot_token": re.compile(r"\bxoxb-[0-9A-Za-z-]{20,}\b"),
     "azure_client_secret": re.compile(r"(?i)\b(?:azure[_-]?client[_-]?secret|client[_-]?secret)\s*[:=]\s*['\"]?[A-Za-z0-9_~.-]{16,}"),
     "npm_token": re.compile(r"\bnpm_[A-Za-z0-9]{20,}\b"),
+    "credential_assignment": re.compile(
+        r"(?i)\b(?:(?:[\w-]+[_-])|[a-z]+)?"
+        r"(?:password|passwd|passphrase|pwd|secret|token|"
+        r"api[_-]?key|access[_-]?(?:key|token)|client[_-]?secret|private[_-]?key|"
+        r"authorization|signing[_-]?key|hmac[_-]?key)"
+        r"(?:(?:[_-](?:value|secret|token|key|credential|password))|"
+        r"(?:value|secret|token|key|credential|password))?\b"
+        r"\s*[:=]\s*['\"]?[^\s'\"`,;}\]]+"
+    ),
 }
 
 

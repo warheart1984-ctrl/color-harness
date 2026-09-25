@@ -119,6 +119,19 @@ def test_secret_patterns_detected() -> None:
     assert scan_for_secrets(PRIVATE_KEY) == ["private_key_header"]
     assert scan_for_secrets({"nested": ["plain", "sk_live_0000000000000000"]}) == ["sk_token"]
     assert scan_for_secrets("no secrets here") == []
+    assert "credential_assignment" in scan_for_secrets("password=SuperSecret123!")
+    assert "credential_assignment" in scan_for_secrets("PASSWORD = 'SuperSecret123!'")
+    assert "credential_assignment" in scan_for_secrets({"config": ["api_key: abcdef0123456789"]})
+    assert "credential_assignment" in scan_for_secrets("hmac_secret=ephemeral123")
+    assert "credential_assignment" in scan_for_secrets("auth_token=ephemeral123")
+    assert "credential_assignment" in scan_for_secrets("secret_value=ephemeral123")
+    assert "credential_assignment" in scan_for_secrets("signing_key=ephemeral123")
+    assert "credential_assignment" in scan_for_secrets("hmacSecret=ephemeral123")
+    assert "credential_assignment" in scan_for_secrets("authToken=ephemeral123")
+    assert "credential_assignment" in scan_for_secrets("secretValue=ephemeral123")
+    assert scan_for_secrets("password reset required") == []
+    assert scan_for_secrets("set password before login") == []
+    assert scan_for_secrets("password_reset_required=true") == []
 
 
 def test_raise_if_secret() -> None:
