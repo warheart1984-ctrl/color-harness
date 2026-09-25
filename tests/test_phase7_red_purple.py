@@ -319,7 +319,7 @@ def test_finding_to_closure_chain(tmp_path) -> None:
     plan = gov.record_approval("task-1", gated_action="plan_approval",
                                approver="white.sys-1", scope={"repo": "demo"},
                                author="silver.build-1", approver_role="ci-operator")
-    change = SilverTeam(registry=reg).present_change(
+    change = SilverTeam(registry=reg, governance=gov).present_change(
         task_id="task-1", actor="silver.build-1",
         change_type="config", branch="isolated/pin-dep",
         files=("package-lock.json",), diff_summary="pin dependency",

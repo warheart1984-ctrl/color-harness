@@ -12,10 +12,13 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from ._common import now_utc_iso
 from .secrets import scan_for_secrets
+
+if TYPE_CHECKING:
+    from .governance import WhiteTeam
 
 SILVER_CHANGE_TYPES: frozenset[str] = frozenset({"branch", "config"})
 
@@ -100,8 +103,9 @@ class ChangeManifest:
 class SilverTeam:
     SILVER_ID = "silver.build-1"
 
-    def __init__(self, registry=None):
+    def __init__(self, registry=None, governance: Optional["WhiteTeam"] = None):
         self.registry = registry
+        self.governance = governance
 
     def _check_actor(self, actor: str) -> None:
         if self.registry is None or not self.registry.is_registered(actor):
@@ -127,7 +131,7 @@ class SilverTeam:
         approval_scope: Optional[dict] = None,
     ) -> ChangeManifest:
         self._check_actor(actor)
-        return ChangeManifest(
+        manifest = ChangeManifest(
             manifest_id=f"chg-{uuid.uuid4().hex[:12]}",
             task_id=task_id,
             actor=actor,
@@ -142,3 +146,18 @@ class SilverTeam:
             rollback_metadata=dict(rollback_metadata),
             timestamp=now_utc_iso(),
         )
+        if self.governance is None or self.governance.registry is not self.registry:
+            raise SilverNoEvidenceError(
+                "silver changes require the shared White evidence ledger"
+            )
+        unresolved = [
+            ref for ref in manifest.plan_refs
+            if not self.governance.reference_resolves(
+                task_id, ref, {"approval", "diagnosis"}, plan_only=True
+            )
+        ]
+        if unresolved:
+            raise SilverNoEvidenceError(
+                f"plan references are not recorded for task '{task_id}'"
+            )
+        return manifest

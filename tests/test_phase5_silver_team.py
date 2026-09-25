@@ -26,8 +26,9 @@ from tests.test_phase1_coordinator import FULL_PATH, _record_gate_evidence, make
 DEV = {"ci_cd": {"environments": ["staging"]}, "repo": "color-harness"}
 
 
-def make_silver(reg: TeamRegistry | None = None) -> SilverTeam:
-    return SilverTeam(registry=reg or make_registry())
+def make_silver(reg: TeamRegistry | None = None, governance=None) -> SilverTeam:
+    reg = reg or (governance.registry if governance is not None else make_registry())
+    return SilverTeam(registry=reg, governance=governance)
 
 
 def rollback_meta() -> dict:
@@ -38,22 +39,51 @@ def rollback_meta() -> dict:
 # Silver Team unit behavior
 # ---------------------------------------------------------------------------
 
-def test_present_change_valid() -> None:
-    manifest = make_silver().present_change(
+def test_present_change_valid(tmp_path) -> None:
+    reg = make_registry()
+    gov = WhiteTeam(registry=reg, ledger_path=str(tmp_path / "ledger.jsonl"))
+    plan = gov.record_approval(
+        "task-1", gated_action="plan_approval", approver="white.sys-1",
+        approver_role="ci-operator", scope=DEV, author="silver.build-1",
+    )
+    manifest = make_silver(reg, gov).present_change(
         task_id="task-1", actor="silver.build-1",
         change_type="branch", branch="isolated/svc-timeout",
         files=("app/deploy.yaml", "app/service.py"),
         diff_summary="raise deploy agent timeout",
-        plan_refs=("dec-plan-1", "diag-1"),
+        plan_refs=(plan.evidence_id,),
         rollback_metadata={"steps": ["git revert <sha>"]},
         resources=("pipeline:build",),
         configurations=("deploy.yaml",),
         approval_scope={"environments": ["staging"]},
     )
     assert isinstance(manifest, ChangeManifest)
-    assert manifest.plan_refs == ("dec-plan-1", "diag-1")
+    assert manifest.plan_refs == (plan.evidence_id,)
     assert manifest.approval_scope == {"environments": ["staging"]}
     assert manifest.rollback_metadata["steps"]
+
+
+def test_silver_rejects_forged_and_cross_task_plan_refs(tmp_path) -> None:
+    reg = make_registry()
+    gov = WhiteTeam(registry=reg, ledger_path=str(tmp_path / "ledger.jsonl"))
+    silver = make_silver(reg, gov)
+
+    def mint(task_id: str, ref: str) -> None:
+        silver.present_change(
+            task_id=task_id, actor="silver.build-1", change_type="branch",
+            branch="isolated/fix", files=("service.py",), diff_summary="fix service",
+            plan_refs=(ref,), rollback_metadata={"steps": ["git revert fix"]},
+        )
+
+    with pytest.raises(SilverNoEvidenceError, match="not recorded"):
+        mint("task-1", "plan-FAKE")
+
+    foreign_plan = gov.record_approval(
+        "task-2", gated_action="plan_approval", approver="white.sys-1",
+        approver_role="ci-operator", scope=DEV, author="silver.build-1",
+    )
+    with pytest.raises(SilverNoEvidenceError, match="not recorded"):
+        mint("task-1", foreign_plan.evidence_id)
 
 
 def test_change_requires_plan_evidence() -> None:
@@ -147,7 +177,7 @@ def test_white_records_change_evidence(tmp_path) -> None:
     plan = gov.record_approval("task-1", gated_action="plan_approval",
                                approver="white.sys-1", scope=DEV,
                                author="silver.build-1", approver_role="ci-operator")
-    manifest = make_silver().present_change(
+    manifest = make_silver(gov.registry, gov).present_change(
         task_id="task-1", actor="silver.build-1",
         change_type="config", branch="isolated/svc-timeout",
         files=("deploy.yaml",), diff_summary="raise timeout",
@@ -217,7 +247,7 @@ def test_implementation_ready_gated_on_recorded_change(tmp_path) -> None:
     assert blocked["error"]["code"] == RejectionCode.EVIDENCE_NOT_RECORDED.value
     assert c.get_task(task["task_id"])["state"] == TaskState.BUILD.value
 
-    manifest = make_silver(reg).present_change(
+    manifest = make_silver(reg, gov).present_change(
         task_id=task["task_id"], actor="silver.build-1",
         change_type="branch", branch="isolated/svc-timeout",
         files=("deploy.yaml",), diff_summary="raise timeout",
@@ -253,7 +283,7 @@ def test_observe_to_implementation_chain(tmp_path) -> None:
     task = c.create_task(title="incident", scope=DEV, risk="yellow")
     _drive_to_plan(c, task["task_id"])
 
-    manifest = make_silver(reg).present_change(
+    manifest = make_silver(reg, gov).present_change(
         task_id=task["task_id"], actor="silver.build-1",
         change_type="branch", branch="isolated/svc-timeout",
         files=("deploy.yaml", "service.py"),
