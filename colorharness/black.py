@@ -12,9 +12,12 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from ._common import now_utc_iso
+
+if TYPE_CHECKING:
+    from .governance import WhiteTeam
 
 CONFIDENCE_LEVELS: frozenset[str] = frozenset({"low", "medium", "high"})
 
@@ -127,8 +130,9 @@ class Diagnosis:
 class BlackTeam:
     BLACK_ID = "black.diag-1"
 
-    def __init__(self, registry=None):
+    def __init__(self, registry=None, governance: Optional["WhiteTeam"] = None):
         self.registry = registry
+        self.governance = governance
 
     def _check_actor(self, actor: str) -> None:
         if self.registry is None or not self.registry.is_registered(actor):
@@ -195,7 +199,7 @@ class BlackTeam:
         alternatives: tuple[str, ...],
     ) -> Diagnosis:
         self._check_actor(actor)
-        return Diagnosis(
+        diagnosis_result = Diagnosis(
             diagnosis_id=f"diag-{uuid.uuid4().hex[:12]}",
             task_id=task_id,
             actor=actor,
@@ -205,3 +209,18 @@ class BlackTeam:
             alternatives=tuple(alternatives),
             timestamp=now_utc_iso(),
         )
+        if self.governance is None or self.governance.registry is not self.registry:
+            raise BlackNoEvidenceError(
+                "diagnoses require the shared White evidence ledger"
+            )
+        unresolved = [
+            ref for ref in diagnosis_result.evidence_refs
+            if not self.governance.reference_resolves(
+                task_id, ref, {"observation", "experiment"}
+            )
+        ]
+        if unresolved:
+            raise BlackNoEvidenceError(
+                f"diagnosis evidence references are not recorded for task '{task_id}'"
+            )
+        return diagnosis_result

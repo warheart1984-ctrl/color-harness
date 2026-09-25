@@ -28,8 +28,9 @@ from tests.test_phase1_coordinator import make_registry
 DEV = {"ci_cd": {"environments": ["staging"]}, "repo": "color-harness"}
 
 
-def make_black(reg: TeamRegistry | None = None) -> BlackTeam:
-    return BlackTeam(registry=reg or make_registry())
+def make_black(reg: TeamRegistry | None = None, governance=None) -> BlackTeam:
+    reg = reg or (governance.registry if governance is not None else make_registry())
+    return BlackTeam(registry=reg, governance=governance)
 
 
 # ---------------------------------------------------------------------------
@@ -77,17 +78,43 @@ def test_hypothesize_rejects_unknown_confidence() -> None:
         )
 
 
-def test_diagnose_valid() -> None:
-    diag = make_black().diagnose(
+def test_diagnose_valid(tmp_path) -> None:
+    reg = make_registry()
+    gov = WhiteTeam(registry=reg, ledger_path=str(tmp_path / "ledger.jsonl"))
+    obs = Observer().collect(task_id="task-1", observation_type="health", detail={"status": "ok"})
+    gov.record_observations("task-1", (obs,))
+    diag = make_black(reg, gov).diagnose(
         task_id="task-1", actor="black.diag-1",
         diagnosis="timeout caused by expired token rotation",
         confidence="high",
-        evidence_refs=("evt-obs-1", "evt-exp-1"),
+        evidence_refs=(obs.observation_id,),
         alternatives=("network partition",),
     )
     assert isinstance(diag, Diagnosis)
     assert diag.confidence == "high"
     assert diag.alternatives == ("network partition",)
+
+
+def test_black_rejects_forged_or_cross_task_diagnosis_refs(tmp_path) -> None:
+    reg = make_registry()
+    gov = WhiteTeam(registry=reg, ledger_path=str(tmp_path / "ledger.jsonl"))
+    black = make_black(reg, gov)
+
+    def diagnose(task_id: str, ref: str) -> None:
+        black.diagnose(
+            task_id=task_id, actor="black.diag-1", diagnosis="root cause",
+            confidence="medium", evidence_refs=(ref,), alternatives=("other cause",),
+        )
+
+    with pytest.raises(BlackNoEvidenceError, match="not recorded"):
+        diagnose("task-1", "evt-FAKE")
+
+    foreign_obs = Observer().collect(
+        task_id="task-2", observation_type="health", detail={"status": "failed"}
+    )
+    gov.record_observations("task-2", (foreign_obs,))
+    with pytest.raises(BlackNoEvidenceError, match="not recorded"):
+        diagnose("task-1", foreign_obs.observation_id)
 
 
 def test_diagnose_requires_uncertainty() -> None:
@@ -148,7 +175,7 @@ def test_experiment_valid_and_gated() -> None:
 
 def test_white_records_black_output(tmp_path) -> None:
     gov = WhiteTeam(registry=make_registry(), ledger_path=str(tmp_path / "l.jsonl"))
-    black = make_black()
+    black = make_black(gov.registry, gov)
     obs = Observer().collect(task_id="task-1", observation_type="ci",
                              detail={"pipeline": "deploy", "exit_status": 1})
     gov.record_observations("task-1", (obs,))
@@ -161,13 +188,14 @@ def test_white_records_black_output(tmp_path) -> None:
     exp = black.experiment(task_id="task-1", actor="black.diag-1",
                            setup={"replay": "trace.json"}, inputs_ref=obs.observation_id,
                            result_ref="result://1", verified=True)
+    records = gov.record_black_output("task-1", (hyp, exp))
     diag = black.diagnose(
         task_id="task-1", actor="black.diag-1",
         diagnosis="token rotation expired", confidence="high",
         evidence_refs=(exp.experiment_id,), alternatives=("network partition",),
     )
 
-    records = gov.record_black_output("task-1", (hyp, exp, diag))
+    records.extend(gov.record_black_output("task-1", (diag,)))
     kinds = sorted(r.record_type for r in records)
     assert kinds == ["diagnosis", "experiment", "hypothesis"]
     hyp_record = [r for r in records if r.record_type == "hypothesis"][0]
@@ -231,7 +259,7 @@ def test_coordinator_gates_progress_on_recorded_evidence(tmp_path) -> None:
     assert blocked["success"] is False
     assert blocked["error"]["code"] == RejectionCode.EVIDENCE_NOT_RECORDED.value
 
-    diag = make_black(reg).diagnose(
+    diag = make_black(reg, gov).diagnose(
         task_id=task["task_id"], actor="black.diag-1",
         diagnosis="token rotation expired", confidence="medium",
         evidence_refs=(obs.observation_id,), alternatives=("network partition",),
@@ -271,7 +299,7 @@ def test_observe_to_diagnosis_chain(tmp_path) -> None:
     c.apply_transition(task["task_id"], Trigger.OBSERVATIONS_READY, actor="blue.obs-1",
                        reason="obs", evidence_refs=(obs_record.evidence_id,), request_id="r2")
 
-    black = make_black(reg)
+    black = make_black(reg, gov)
     hyp = black.hypothesize(
         task_id=task["task_id"], actor="black.diag-1",
         hypothesis="token rotation expired", confidence="medium",
@@ -281,6 +309,7 @@ def test_observe_to_diagnosis_chain(tmp_path) -> None:
     exp = black.experiment(task_id=task["task_id"], actor="black.diag-1",
                            setup={"inspect": "token_age"}, inputs_ref=obs.observation_id,
                            result_ref="verify://token", verified=True)
+    gov.record_black_output(task["task_id"], (hyp, exp))
     diag = black.diagnose(
         task_id=task["task_id"], actor="black.diag-1",
         diagnosis="deploy agent token expired mid-rotation",
@@ -288,7 +317,7 @@ def test_observe_to_diagnosis_chain(tmp_path) -> None:
         evidence_refs=(obs.observation_id, exp.experiment_id),
         alternatives=("permission drift",),
     )
-    diagnosis_record = gov.record_black_output(task["task_id"], (hyp, exp, diag))[-1]
+    diagnosis_record = gov.record_black_output(task["task_id"], (diag,))[-1]
 
     ok = c.apply_transition(task["task_id"], Trigger.DIAGNOSIS_ACCEPTED,
                             actor="black.diag-1", reason="diag accepted",

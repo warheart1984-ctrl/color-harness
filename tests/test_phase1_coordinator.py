@@ -77,7 +77,7 @@ def _record_gate_evidence(c: Coordinator, task_id: str, trigger: Trigger) -> tup
             r for r in reversed(c.governance.ledger.records)
             if r.task_id == task_id and r.record_type == "observation"
         )
-        diag = BlackTeam(registry=c.registry).diagnose(
+        diag = BlackTeam(registry=c.registry, governance=c.governance).diagnose(
             task_id=task_id, actor="black.diag-1",
             diagnosis="baseline healthy", confidence="medium",
             evidence_refs=(observation.evidence_id,),
