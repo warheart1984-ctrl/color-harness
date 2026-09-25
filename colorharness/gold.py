@@ -15,10 +15,13 @@ import re
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from ._common import now_utc_iso
 from .secrets import raise_if_secret
+
+if TYPE_CHECKING:
+    from .governance import WhiteTeam
 
 VERSION_RE = re.compile(r"^\d+\.\d+$")
 
@@ -150,8 +153,9 @@ class ExceptionGrant:
 class GoldTeam:
     GOLD_ID = "gold.plan-1"
 
-    def __init__(self, registry=None):
+    def __init__(self, registry=None, governance: Optional["WhiteTeam"] = None):
         self.registry = registry
+        self.governance = governance
         self._standards: dict[str, dict[str, Standard]] = {}
         self._pipelines: dict[str, dict[str, ReferencePipeline]] = {}
 
@@ -249,7 +253,7 @@ class GoldTeam:
         reason: str,
     ) -> ExceptionGrant:
         self._check_actor(actor)
-        return ExceptionGrant(
+        grant = ExceptionGrant(
             exception_id=f"exc-{uuid.uuid4().hex[:12]}",
             task_id=task_id,
             actor=actor,
@@ -261,3 +265,30 @@ class GoldTeam:
             reason=reason,
             timestamp=now_utc_iso(),
         )
+        if self.governance is None or self.governance.registry is not self.registry:
+            raise ExceptionRequiresApproval(
+                "gold exceptions require the shared White approval ledger"
+            )
+        approval = next(
+            (
+                approval
+                for approval in self.governance.approvals_for(task_id)
+                if approval_ref in {approval.approval_id, approval.evidence_id}
+            ),
+            None,
+        )
+        if approval is None or not self.governance.approval_valid(
+            approval.approval_id, task_id, "policy_exception"
+        ):
+            raise ExceptionRequiresApproval(
+                "exception approval must resolve to a live White policy_exception approval"
+            )
+        if approval.approver == actor:
+            raise InvalidExceptionError("an exception author cannot approve their own exception")
+        if approval.approver_role != approver or approver not in {
+            "security-lead", "platform-owner"
+        }:
+            raise ExceptionRequiresApproval(
+                "exception approval must come from the named reviewer role"
+            )
+        return grant
