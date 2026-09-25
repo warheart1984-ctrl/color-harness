@@ -67,6 +67,15 @@ def test_validate_scope_accepts_known_domains() -> None:
     validate_scope(DEV)
 
 
+def test_scope_details_without_domain_rejected() -> None:
+    try:
+        validate_scope({"environments": ["prod"], "commands": ["rm -rf /"]})
+    except ScopeOutOfBoundsError:
+        pass
+    else:
+        raise AssertionError("detail keys cannot substitute for an allowed domain")
+
+
 def test_out_of_bounds_domain_rejected() -> None:
     bad = out_of_bounds_keys({"ci_cd": {}, "database": {"engine": "postgres"}})
     assert bad == ["database"]
@@ -79,7 +88,8 @@ def test_out_of_bounds_domain_rejected() -> None:
 
 
 def test_coordinator_rejects_out_of_bounds_scope(tmp_path) -> None:
-    c = Coordinator(registry=make_registry(), store_path=str(tmp_path / "e.jsonl"))
+    reg = make_registry()
+    c = Coordinator(registry=reg, store_path=str(tmp_path / "e.jsonl"), governance=WhiteTeam(registry=reg))
     result = c.create_task(
         title="steal rows", scope={"database": {"engine": "postgres"}},
     )
@@ -91,7 +101,7 @@ def test_coordinator_rejects_out_of_bounds_scope(tmp_path) -> None:
 def test_governance_declare_rejects_out_of_bounds(tmp_path) -> None:
     gov = WhiteTeam(registry=make_registry(), ledger_path=str(tmp_path / "l.jsonl"))
     try:
-        gov.declare_scope("task-1", declared_by="x", scope={"database": {}}, risk="yellow")
+        gov.declare_scope("task-1", declared_by="white.sys-1", scope={"database": {}}, risk="yellow")
     except ScopeOutOfBoundsError:
         pass
     else:
@@ -150,9 +160,10 @@ def test_ledger_rejects_secret_source(tmp_path) -> None:
 
 
 def test_coordinator_rejects_secret_at_intake(tmp_path) -> None:
-    c = Coordinator(registry=make_registry(), store_path=str(tmp_path / "e.jsonl"))
+    reg = make_registry()
+    c = Coordinator(registry=reg, store_path=str(tmp_path / "e.jsonl"), governance=WhiteTeam(registry=reg))
     result = c.create_task(
-        title="deploy key", scope={"config": {}},
+        title="deploy key", scope={"config": {"targets": ["app"]}},
         reason=f"using {PRIVATE_KEY}",
     )
     assert result["success"] is False
@@ -161,7 +172,8 @@ def test_coordinator_rejects_secret_at_intake(tmp_path) -> None:
 
 
 def test_coordinator_rejects_secret_in_transition(tmp_path) -> None:
-    c = Coordinator(registry=make_registry(), store_path=str(tmp_path / "e.jsonl"))
+    reg = make_registry()
+    c = Coordinator(registry=reg, store_path=str(tmp_path / "e.jsonl"), governance=WhiteTeam(registry=reg))
     task = c.create_task(title="t", scope={"repo": "r"})
     result = c.apply_transition(
         task["task_id"], Trigger.ROUTE, actor=Coordinator.SYSTEM_AGENT,
@@ -217,9 +229,12 @@ def _governed(tmp_path) -> tuple[Coordinator, WhiteTeam]:
 def test_yellow_tier_one_ci_operator_approval(tmp_path) -> None:
     c, gov = _governed(tmp_path)
     task = c.create_task(title="t", scope=DEV, risk="yellow")
-    gov.record_approval(
-        task["task_id"], gated_action="release", approver="white.sys-1", scope=DEV,
-    )
+    c.registry.grant_role("black.diag-1", "security-lead")
+    c.registry.grant_role("white.sys-1", "platform-owner")
+    gov.record_approval(task["task_id"], gated_action="release", approver="black.diag-1",
+                        scope=DEV, approver_role="security-lead", author="silver.build-1")
+    gov.record_approval(task["task_id"], gated_action="release", approver="white.sys-1",
+                        scope=DEV, approver_role="platform-owner", author="silver.build-1")
     assert gov.has_valid_approval(task["task_id"], "release", requested_scope=DEV)
 
 
@@ -227,10 +242,10 @@ def test_default_ttl_is_ninety_days(tmp_path) -> None:
     c, gov = _governed(tmp_path)
     task = c.create_task(title="t", scope=DEV)
     approval = gov.record_approval(
-        task["task_id"], gated_action="release", approver="white.sys-1", scope=DEV,
+        task["task_id"], gated_action="release", approver="white.sys-1", scope=DEV, author="silver.build-1",
     )
     assert approval.ttl_seconds == 90 * 24 * 3600
-    assert approval.approver_role == "ci-operator"
+    assert approval.approver_role == "platform-owner"
 
 
 def test_approver_without_role_rejected(tmp_path) -> None:
@@ -238,7 +253,7 @@ def test_approver_without_role_rejected(tmp_path) -> None:
     task = c.create_task(title="t", scope=DEV)
     try:
         gov.record_approval(
-            task["task_id"], gated_action="release", approver="green.rel-1", scope=DEV,
+            task["task_id"], gated_action="release", approver="green.rel-1", scope=DEV, author="silver.build-1",
         )
     except RoleRequiredError:
         pass
@@ -250,27 +265,28 @@ def test_role_without_tier_authority_rejected(tmp_path) -> None:
     reg = make_registry()
     reg.grant_role("black.diag-1", "security-lead")
     gov = WhiteTeam(registry=reg)
-    gov.declare_scope("task-y", declared_by="x", scope=DEV, risk="yellow")
+    gov.declare_scope("task-y", declared_by="white.sys-1", scope=DEV, risk="yellow")
     try:
         gov.record_approval(
-            "task-y", gated_action="release", approver="black.diag-1", scope=DEV,
+            "task-y", gated_action="read", approver="black.diag-1", scope=DEV, author="silver.build-1",
         )
     except RoleRiskForbidden:
         pass
     else:
         raise AssertionError(
-            "security-lead must not clear a yellow-tier gate (ci-operator only)"
+            "security-lead must not clear a low-risk read gate"
         )
 
 
 def test_ambiguous_roles_require_explicit_choice(tmp_path) -> None:
     reg = make_registry()
     reg.grant_role("white.sys-1", "platform-owner")
+    reg.grant_role("white.sys-1", "security-lead")
     gov = WhiteTeam(registry=reg)
-    gov.declare_scope("task-1", declared_by="x", scope=DEV, risk="yellow")
+    gov.declare_scope("task-1", declared_by="white.sys-1", scope=DEV, risk="yellow")
     try:
         gov.record_approval(
-            "task-1", gated_action="release", approver="white.sys-1", scope=DEV,
+            "task-1", gated_action="release", approver="white.sys-1", scope=DEV, author="silver.build-1",
         )
     except AmbiguousRoleError:
         pass
@@ -282,10 +298,15 @@ def test_explicit_ambiguous_role_disambiguates(tmp_path) -> None:
     reg = make_registry()
     reg.grant_role("white.sys-1", "platform-owner")
     gov = WhiteTeam(registry=reg)
-    gov.declare_scope("task-1", declared_by="x", scope=DEV, risk="yellow")
+    gov.declare_scope("task-1", declared_by="white.sys-1", scope=DEV, risk="yellow")
     gov.record_approval(
         "task-1", gated_action="release", approver="white.sys-1", scope=DEV,
-        approver_role="ci-operator",
+        approver_role="platform-owner", author="silver.build-1",
+    )
+    reg.grant_role("black.diag-1", "security-lead")
+    gov.record_approval(
+        "task-1", gated_action="release", approver="black.diag-1", scope=DEV,
+        approver_role="security-lead", author="silver.build-1",
     )
     assert gov.has_valid_approval("task-1", "release", requested_scope=DEV)
 
@@ -295,16 +316,16 @@ def test_red_tier_requires_two_role_quorum(tmp_path) -> None:
     reg.grant_role("black.diag-1", "security-lead")
     reg.grant_role("white.sys-1", "platform-owner")
     gov = WhiteTeam(registry=reg, ledger_path=str(tmp_path / "l.jsonl"))
-    gov.declare_scope("task-r", declared_by="x", scope=DEV, risk="red")
+    gov.declare_scope("task-r", declared_by="white.sys-1", scope=DEV, risk="red")
 
     lead = gov.record_approval(
-        "task-r", gated_action="release", approver="black.diag-1", scope=DEV,
+        "task-r", gated_action="release", approver="black.diag-1", scope=DEV, author="silver.build-1",
     )
     assert not gov.has_valid_approval("task-r", "release", requested_scope=DEV)
 
     gov.record_approval(
         "task-r", gated_action="release", approver="white.sys-1", scope=DEV,
-        approver_role="platform-owner",
+        approver_role="platform-owner", author="silver.build-1",
     )
     assert gov.approval_valid(lead.approval_id, "task-r", "release", DEV)
     assert gov.has_valid_approval("task-r", "release", requested_scope=DEV)
@@ -313,9 +334,9 @@ def test_red_tier_requires_two_role_quorum(tmp_path) -> None:
 def test_approval_invalid_after_role_revoked(tmp_path) -> None:
     reg = make_registry()
     gov = WhiteTeam(registry=reg)
-    gov.declare_scope("task-1", declared_by="x", scope=DEV, risk="yellow")
+    gov.declare_scope("task-1", declared_by="white.sys-1", scope=DEV, risk="yellow")
     approval = gov.record_approval(
-        "task-1", gated_action="release", approver="white.sys-1", scope=DEV,
+        "task-1", gated_action="release", approver="white.sys-1", scope=DEV, author="silver.build-1",
     )
     reg.revoke_role("white.sys-1", "ci-operator")
     assert not gov.approval_quorum_met("task-1", "release", requested_scope=DEV)
@@ -351,8 +372,24 @@ def test_key_reuse_with_different_payload_is_conflict() -> None:
     assert log.seen("a", "rid-1", fp2) is IDEMPOTENCY_CONFLICT
 
 
+def test_event_log_rejects_tampered_tail(tmp_path) -> None:
+    import pytest
+    path = tmp_path / "events.jsonl"
+    log = EventLog(str(path))
+    log.append(_make_event("t1", "a", "rid-1", "reason-a", ""))
+    rows = path.read_text(encoding="utf-8").splitlines()
+    import json
+    event = json.loads(rows[0])
+    event["reason"] = "rewritten"
+    path.write_text(json.dumps(event) + "\n", encoding="utf-8")
+    from colorharness.eventlog import CorruptEventStoreError
+    with pytest.raises(CorruptEventStoreError):
+        EventLog(str(path))
+
+
 def test_coordinator_rejects_idempotency_conflict(tmp_path) -> None:
-    c = Coordinator(registry=make_registry(), store_path=str(tmp_path / "e.jsonl"))
+    reg = make_registry()
+    c = Coordinator(registry=reg, store_path=str(tmp_path / "e.jsonl"), governance=WhiteTeam(registry=reg))
     task = c.create_task(title="t", scope={"repo": "r"})
     c.apply_transition(
         task["task_id"], Trigger.ROUTE, actor=Coordinator.SYSTEM_AGENT,
@@ -371,14 +408,16 @@ def test_coordinator_rejects_idempotency_conflict(tmp_path) -> None:
 def test_replayed_transition_after_restart_returns_cached(tmp_path) -> None:
     reg = make_registry()
     store = str(tmp_path / "e.jsonl")
-    c1 = Coordinator(registry=reg, store_path=store)
+    gov1 = WhiteTeam(registry=reg, ledger_path=str(tmp_path / "ledger-replay.jsonl"))
+    c1 = Coordinator(registry=reg, store_path=store, governance=gov1)
     task = c1.create_task(title="t", scope={"repo": "r"})
     c1.apply_transition(
         task["task_id"], Trigger.ROUTE, actor=Coordinator.SYSTEM_AGENT,
         reason="route me", evidence_refs=("x",), request_id="rid-route",
     )
     count = c1.event_count()
-    c2 = Coordinator(registry=reg, store_path=store)
+    gov2 = WhiteTeam(registry=reg, ledger_path=str(tmp_path / "ledger-replay.jsonl"))
+    c2 = Coordinator(registry=reg, store_path=store, governance=gov2)
     replay = c2.apply_transition(
         task["task_id"], Trigger.ROUTE, actor=Coordinator.SYSTEM_AGENT,
         reason="route me", evidence_refs=("x",), request_id="rid-route",
@@ -403,7 +442,9 @@ def test_watchdog_heartbeat_and_staleness() -> None:
 
 def test_quarantined_agent_rejected(tmp_path) -> None:
     wd = Watchdog()
-    c = Coordinator(registry=make_registry(), store_path=str(tmp_path / "e.jsonl"), watchdog=wd)
+    reg = make_registry()
+    c = Coordinator(registry=reg, store_path=str(tmp_path / "e.jsonl"), watchdog=wd,
+                    governance=WhiteTeam(registry=reg))
     task = c.create_task(title="t", scope={"repo": "r"})
     c.apply_transition(task["task_id"], Trigger.ROUTE, actor=Coordinator.SYSTEM_AGENT,
                        reason="route", evidence_refs=("x",), request_id="r-route")
@@ -426,9 +467,9 @@ def test_watchdog_escalates_stale_block(tmp_path) -> None:
     for trigger, actor, reason in FULL_PATH:
         if TaskState(c.get_task(task["task_id"])["state"]) == TaskState.DIAGNOSE:
             break
-        _record_gate_evidence(c, task["task_id"], trigger)
+        refs = _record_gate_evidence(c, task["task_id"], trigger)
         c.apply_transition(task["task_id"], trigger, actor=actor, reason=reason,
-                           evidence_refs=(f"log://{reason}",),
+                           evidence_refs=refs or (f"log://{reason}",),
                            request_id=f"rid-{reason}-{actor}")
     c.apply_transition(task["task_id"], Trigger.BLOCK, actor="black.diag-1",
                        reason="stale artifact", evidence_refs=("log://block",),
@@ -456,13 +497,14 @@ def test_manifest_digest_anchors_ledger() -> None:
     ledger.append("observation", actor="a", team="observer", source="s://",
                   payload={"observation_type": "x", "detail": "m1"}, task_id="t1")
     digest1 = ledger.manifest_digest()
-    assert ledger.verify_manifest()
+    assert not ledger.verify_manifest()
+    assert ledger.verify_manifest(digest1)
     assert len(digest1) == 64
 
     ledger.append("observation", actor="b", team="observer", source="s://",
                   payload={"observation_type": "x", "detail": "m2"}, task_id="t2")
     assert ledger.manifest_digest() != digest1
-    assert ledger.verify_manifest()
+    assert ledger.verify_manifest(digest1) is False
 
 
 def test_manifest_detects_tampering() -> None:

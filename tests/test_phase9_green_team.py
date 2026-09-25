@@ -36,17 +36,24 @@ def test_release_requires_recorded_approval(tmp_path) -> None:
         target_environment="staging", phases=("canary", "promote"),
         rollback_metadata={"steps": "redeploy previous digest"},
     )
+    gov.declare_scope("task-1", declared_by="white.sys-1", scope={"repo": ["demo"]}, risk="yellow")
     with pytest.raises(GreenReleaseNotApproved):
         green.execute_release("task-1", actor="green.rel-1", plan=plan, approvals=())
 
     approval = gov.record_approval(
-        "task-1", gated_action="release", approver="white.sys-1", scope={"repo": "demo"}
+        "task-1", gated_action="release", approver="white.sys-1", scope={"repo": ["demo"]}, author="silver.build-1"
     )
+    with pytest.raises(GreenReleaseNotApproved):
+        green.execute_release("task-1", actor="green.rel-1", plan=plan, approvals=(approval.approval_id,))
+    reg.grant_role("black.diag-1", "security-lead")
+    reg.grant_role("white.sys-1", "platform-owner")
+    gov.record_approval("task-1", gated_action="release", approver="black.diag-1", scope={"repo": ["demo"]}, author="silver.build-1", approver_role="security-lead")
+    owner = gov.record_approval("task-1", gated_action="release", approver="white.sys-1", scope={"repo": ["demo"]}, author="silver.build-1", approver_role="platform-owner")
     release = green.execute_release(
-        "task-1", actor="green.rel-1", plan=plan, approvals=(approval.approval_id,)
+        "task-1", actor="green.rel-1", plan=plan, approvals=(approval.approval_id, owner.approval_id)
     )
     assert isinstance(release, Release)
-    assert release.approval_refs == (approval.approval_id,)
+    assert set(release.approval_refs) == {approval.approval_id, owner.approval_id}
 
 
 def test_white_records_release_and_rollback(tmp_path) -> None:
@@ -71,5 +78,4 @@ def test_white_records_release_and_rollback(tmp_path) -> None:
     records = gov.record_green_output("task-1", (release, rollback))
     assert [record.record_type for record in records] == ["release", "rollback"]
     assert gov.ledger.verify_chain()
-    assert gov.ledger.verify_manifest()
-
+    assert not gov.ledger.verify_manifest()

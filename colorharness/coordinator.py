@@ -26,14 +26,13 @@ from .eventlog import (
     EventLog,
     idempotency_fingerprint,
 )
-from .governance import GOVERNED_ACTIONS
+from .governance import GOVERNED_ACTIONS, WhiteTeam
 from .registry import RESOLVER_ROLES, TeamRegistry
 from .scope import ScopeOutOfBoundsError, validate_scope
 from .secrets import SecretExposureError, scan_for_secrets
 from .watchdog import SYSTEM_AGENT as WATCHDOG_SYSTEM_AGENT
 
 if TYPE_CHECKING:
-    from .governance import WhiteTeam
     from .watchdog import Watchdog
 
 
@@ -51,7 +50,13 @@ class Coordinator:
         governance: Optional["WhiteTeam"] = None,
         watchdog: Optional["Watchdog"] = None,
     ):
-        self.registry = registry or TeamRegistry()
+        if governance is None:
+            raise ValueError("Coordinator requires WhiteTeam governance")
+        self.registry = registry or governance.registry or TeamRegistry()
+        if governance.registry is None:
+            governance.registry = self.registry
+        elif governance.registry is not self.registry:
+            raise ValueError("Coordinator and WhiteTeam must share the same registry")
         if not self.registry.is_registered(self.SYSTEM_AGENT):
             self.registry.register(
                 self.SYSTEM_AGENT,
@@ -86,21 +91,21 @@ class Coordinator:
         task_id = task_id or f"task-{uuid.uuid4().hex[:12]}"
         existing = self._tasks.get(task_id)
         if existing is not None:
-            return existing
+            return self._public_task(existing)
         correlation_id = correlation_id or f"corr-{task_id}"
         request_id = request_id or f"req-{uuid.uuid4().hex[:12]}"
         evidence_refs = evidence_refs or (f"task://{task_id}",)
 
+        if _has_secret(title, reason, scope, evidence_refs):
+            return self._rejection_dict(
+                task_id, request_id, None, RejectionCode.SECRET_EXPOSURE,
+                "task payload contains secret material",
+            )
         try:
             validate_scope(dict(scope))
         except ScopeOutOfBoundsError as exc:
             return self._rejection_dict(
                 task_id, request_id, None, RejectionCode.SCOPE_OUT_OF_BOUNDS, str(exc)
-            )
-        if _has_secret(title, reason, scope, evidence_refs):
-            return self._rejection_dict(
-                task_id, request_id, None, RejectionCode.SECRET_EXPOSURE,
-                "task payload contains secret material",
             )
         fingerprint = idempotency_fingerprint(title, dict(scope), risk)
         cached = self.log.seen(actor, request_id, fingerprint)
@@ -146,13 +151,17 @@ class Coordinator:
         result = self.log.append(event, fingerprint)
         self._apply(event, task)
         self._tasks[task_id] = task
-        if self.governance is not None:
+        try:
             self.governance.declare_scope(
                 task_id,
-                declared_by=actor,
+                declared_by="white.sys-1",
                 scope=dict(scope),
                 risk=risk,
                 correlation_id=correlation_id,
+            )
+        except Exception as exc:
+            return self._rejection_dict(
+                task_id, request_id, None, RejectionCode.SCOPE_OUT_OF_BOUNDS, str(exc)
             )
         return self._public_task(task)
 
@@ -190,11 +199,7 @@ class Coordinator:
                 task_id, request_id, None, RejectionCode.TASK_NOT_FOUND,
                 f"no task with id '{task_id}'",
             )
-        if (
-            self.governance is not None
-            and self.governance.is_paused(task_id)
-            and trigger not in RESOLUTION_TRIGGERS
-        ):
+        if self.governance.is_paused(task_id):
             return self._record_rejection(
                 task, trigger, actor, request_id,
                 RejectionCode.PAUSED,
@@ -269,8 +274,28 @@ class Coordinator:
                     f"team '{team}' does not own state '{current.value}'",
                 )
 
+        new_state = resolve_next_state(current, trigger, resume_state)
+        if new_state is None:
+            return self._record_rejection(
+                task, trigger, actor, request_id,
+                RejectionCode.STATE_INVALID,
+                f"no legal transition from '{current.value}' on trigger '{trigger.value}'",
+                fingerprint=fingerprint,
+            )
+
         governed_action = action or GOVERNED_ACTIONS.get(trigger)
-        if governed_action and self.governance is not None:
+        if trigger == Trigger.PLAN_APPROVED:
+            governed_action = "plan_approval"
+        if team == "yellow" and trigger in {Trigger.PLAN_APPROVED, Trigger.RELEASE_APPROVED}:
+            from .yellow import YellowTeam
+            try:
+                YellowTeam(self.registry).forbid_self_approval(actor)
+            except Exception as exc:
+                return self._record_rejection(
+                    task, trigger, actor, request_id, RejectionCode.AUTH_INVALID,
+                    str(exc), fingerprint=fingerprint,
+                )
+        if governed_action:
             requested_scope = None
             declaration = self.governance.get_scope(task_id)
             if declaration is not None:
@@ -285,17 +310,31 @@ class Coordinator:
                 )
 
         required_type = EVIDENCE_GATED_TRIGGERS.get(trigger)
-        if required_type and self.governance is not None:
-            if not self.governance.has_evidence(task_id, required_type):
+        if required_type:
+            if not self.governance.has_referenced_evidence(
+                task_id, required_type, tuple(evidence_refs)
+            ):
                 return self._record_rejection(
                     task, trigger, actor, request_id,
                     RejectionCode.EVIDENCE_NOT_RECORDED,
                     f"trigger '{trigger.value}' requires a recorded "
                     f"'{required_type}' evidence record for task '{task_id}'",
+                    fingerprint=fingerprint,
                 )
+            if required_type == "approval":
+                action_name = governed_action or ""
+                if not self.governance.valid_approval_refs(task_id, action_name):
+                    return self._record_rejection(
+                        task, trigger, actor, request_id,
+                        RejectionCode.EVIDENCE_NOT_RECORDED,
+                        f"trigger '{trigger.value}' requires live approval for '{action_name}'",
+                        fingerprint=fingerprint,
+                    )
 
-        if trigger == Trigger.VERIFICATION_PASSED and self.governance is not None:
-            if not self.governance.has_evidence(task_id, "test_result"):
+        if trigger == Trigger.VERIFICATION_PASSED:
+            if not self.governance.has_referenced_evidence(
+                task_id, "test_result", tuple(evidence_refs)
+            ):
                 return self._record_rejection(
                     task, trigger, actor, request_id,
                     RejectionCode.EVIDENCE_NOT_RECORDED,
@@ -308,14 +347,6 @@ class Coordinator:
                     RejectionCode.VERIFICATION_FAILED,
                     "at least one recorded test result for the task has failed",
                 )
-
-        new_state = resolve_next_state(current, trigger, resume_state)
-        if new_state is None:
-            return self._record_rejection(
-                task, trigger, actor, request_id,
-                RejectionCode.STATE_INVALID,
-                f"no legal transition from '{current.value}' on trigger '{trigger.value}'",
-            )
 
         hold_resume = new_state in RESUME_HOLDING
         event = Event(
@@ -337,7 +368,7 @@ class Coordinator:
         )
         result = self.log.append(event, fingerprint)
         self._apply(event, task)
-        if self.governance is not None:
+        if event.outcome == "SUCCESS":
             self.governance.record_transition(event)
         return result
 
@@ -381,6 +412,7 @@ class Coordinator:
 
     @staticmethod
     def _apply(event: Event, task: dict) -> None:
+        task["seq"] = max(task["seq"], event.seq)
         if event.outcome != "SUCCESS":
             return
         task["state"] = event.to_state
@@ -388,7 +420,6 @@ class Coordinator:
             task["resume_state"] = event.resume_state
         else:
             task["resume_state"] = None
-        task["seq"] = max(task["seq"], event.seq)
         entered = task.setdefault("state_entered", {})
         entered[event.to_state] = event.timestamp
 
@@ -434,8 +465,8 @@ class Coordinator:
             error_code=code.value,
             evidence_refs=(),
         )
-        task["seq"] = max(task["seq"], event.seq)
         result = self.log.append(event, fingerprint)
+        self._apply(event, task)
         return result
 
     def _replay(self) -> None:

@@ -61,12 +61,15 @@ def test_staging_release_requires_rollback_ready_plan(tmp_path) -> None:
         artifact_ref="sha256:release", target_environment="staging",
         phases=("canary", "promote"), rollback_metadata={"restore": "sha256:previous"},
     )
-    approval = governance.record_approval(
-        "staging-1", gated_action="release", approver="white.sys-1", scope={"repo": "demo"}
+    platform = governance.record_approval(
+        "staging-1", gated_action="release", approver="white.sys-1", scope={"repo": "demo"}, author="silver.build-1", approver_role="platform-owner"
+    )
+    security = governance.record_approval(
+        "staging-1", gated_action="release", approver="black.diag-1", scope={"repo": "demo"}, author="silver.build-1", approver_role="security-lead"
     )
     release = green.execute_release(
         "staging-1", actor="green.rel-1", plan=plan,
-        approvals=(approval.approval_id,),
+        approvals=(platform.approval_id, security.approval_id),
     )
     rollback = green.rollback(
         "staging-1", actor="green.rel-1", release_ref=release.release_id,
@@ -88,7 +91,8 @@ def test_watchdog_quarantines_and_recovers_agent() -> None:
 
 def test_duplicate_transition_replay_is_idempotent(tmp_path) -> None:
     registry = make_registry()
-    coordinator = Coordinator(registry=registry, store_path=str(tmp_path / "events.jsonl"))
+    coordinator = Coordinator(registry=registry, store_path=str(tmp_path / "events.jsonl"),
+                              governance=WhiteTeam(registry=registry, ledger_path=str(tmp_path / "ledger.jsonl")))
     task = coordinator.create_task(title="replay", scope={"repo": "demo"})
     first = coordinator.apply_transition(
         task["task_id"], Trigger.ROUTE, actor=Coordinator.SYSTEM_AGENT,
@@ -110,4 +114,3 @@ def test_unauthorized_release_actor_is_rejected() -> None:
             artifact_ref="sha256:x", target_environment="production",
             phases=("promote",), rollback_metadata={"restore": "previous"},
         )
-

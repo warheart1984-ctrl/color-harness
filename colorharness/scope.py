@@ -40,10 +40,27 @@ def out_of_bounds_keys(scope: dict) -> list[str]:
 
 
 def validate_scope(scope: dict) -> None:
-    """Reject any scope that names a domain outside the DevOps allowlist."""
+    """Require a concrete allowed domain and reject out-of-bounds keys."""
     bad = out_of_bounds_keys(scope)
     if bad:
         raise ScopeOutOfBoundsError(
             f"scope names non-DevOps domains: {bad}; "
             f"allowlist: {sorted(DEVOPS_ALLOWLIST)}"
         )
+    domains = [key for key in scope if key in DEVOPS_ALLOWLIST]
+    if not domains:
+        raise ScopeOutOfBoundsError(
+            "scope must declare at least one allowlisted DevOps domain"
+        )
+    if not any(_has_targets(scope[key]) for key in domains):
+        raise ScopeOutOfBoundsError(
+            "scope must include non-empty targets for at least one DevOps domain"
+        )
+
+
+def _has_targets(value: object) -> bool:
+    if isinstance(value, dict):
+        return any(_has_targets(item) for item in value.values())
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return bool(value)
+    return bool(str(value).strip()) if value is not None else False

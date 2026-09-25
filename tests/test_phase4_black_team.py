@@ -149,14 +149,17 @@ def test_experiment_valid_and_gated() -> None:
 def test_white_records_black_output(tmp_path) -> None:
     gov = WhiteTeam(registry=make_registry(), ledger_path=str(tmp_path / "l.jsonl"))
     black = make_black()
+    obs = Observer().collect(task_id="task-1", observation_type="ci",
+                             detail={"pipeline": "deploy", "exit_status": 1})
+    gov.record_observations("task-1", (obs,))
     hyp = black.hypothesize(
         task_id="task-1", actor="black.diag-1",
         hypothesis="deploy timeout", confidence="medium",
         alternatives=("config race",), discriminator="verbose timing",
-        evidence_refs=("evt-obs-1",),
+        evidence_refs=(obs.observation_id,),
     )
     exp = black.experiment(task_id="task-1", actor="black.diag-1",
-                           setup={"replay": "trace.json"}, inputs_ref="trace://1",
+                           setup={"replay": "trace.json"}, inputs_ref=obs.observation_id,
                            result_ref="result://1", verified=True)
     diag = black.diagnose(
         task_id="task-1", actor="black.diag-1",
@@ -213,10 +216,10 @@ def test_coordinator_gates_progress_on_recorded_evidence(tmp_path) -> None:
 
     obs = Observer().collect(task_id=task["task_id"], observation_type="metrics",
                              detail={"metric": "error_rate", "value": 0.2})
-    gov.record_observations(task["task_id"], (obs,))
+    obs_record = gov.record_observations(task["task_id"], (obs,))[0]
     ok = c.apply_transition(
         task["task_id"], Trigger.OBSERVATIONS_READY, actor="blue.obs-1",
-        reason="obs", evidence_refs=("log://obs",), request_id="r3",
+        reason="obs", evidence_refs=(obs_record.evidence_id,), request_id="r3",
     )
     assert ok["success"] is True
     assert c.get_task(task["task_id"])["state"] == TaskState.DIAGNOSE.value
@@ -233,25 +236,20 @@ def test_coordinator_gates_progress_on_recorded_evidence(tmp_path) -> None:
         diagnosis="token rotation expired", confidence="medium",
         evidence_refs=(obs.observation_id,), alternatives=("network partition",),
     )
-    gov.record_black_output(task["task_id"], (diag,))
+    diagnosis_record = gov.record_black_output(task["task_id"], (diag,))[0]
     ok = c.apply_transition(
         task["task_id"], Trigger.DIAGNOSIS_ACCEPTED, actor="black.diag-1",
-        reason="diag", evidence_refs=("log://diag",), request_id="r5",
+        reason="diag", evidence_refs=(diagnosis_record.evidence_id,), request_id="r5",
     )
     assert ok["success"] is True
     assert c.get_task(task["task_id"])["state"] == TaskState.PLAN.value
 
 
-def test_evidence_gates_ignored_without_governance(tmp_path) -> None:
-    c = Coordinator(registry=make_registry(), store_path=str(tmp_path / "e.jsonl"))
-    task = c.create_task(title="t", scope={})
-    c.apply_transition(task["task_id"], Trigger.ROUTE, actor=Coordinator.SYSTEM_AGENT,
-                       reason="r", evidence_refs=("x",), request_id="r1")
-    result = c.apply_transition(
-        task["task_id"], Trigger.OBSERVATIONS_READY, actor="blue.obs-1",
-        reason="r", evidence_refs=("x",), request_id="r2",
-    )
-    assert result["success"] is True
+def test_evidence_gates_require_white(tmp_path) -> None:
+    import pytest
+    reg = make_registry()
+    with pytest.raises(ValueError):
+        Coordinator(registry=reg, store_path=str(tmp_path / "e.jsonl"), governance=None)
 
 
 # ---------------------------------------------------------------------------
@@ -269,9 +267,9 @@ def test_observe_to_diagnosis_chain(tmp_path) -> None:
     obs = Observer().collect(task_id=task["task_id"], observation_type="ci",
                              detail={"pipeline": "deploy", "exit_status": 1},
                              source="ci://deploy")
-    gov.record_observations(task["task_id"], (obs,))
+    obs_record = gov.record_observations(task["task_id"], (obs,))[0]
     c.apply_transition(task["task_id"], Trigger.OBSERVATIONS_READY, actor="blue.obs-1",
-                       reason="obs", evidence_refs=("log://obs",), request_id="r2")
+                       reason="obs", evidence_refs=(obs_record.evidence_id,), request_id="r2")
 
     black = make_black(reg)
     hyp = black.hypothesize(
@@ -290,17 +288,17 @@ def test_observe_to_diagnosis_chain(tmp_path) -> None:
         evidence_refs=(obs.observation_id, exp.experiment_id),
         alternatives=("permission drift",),
     )
-    gov.record_black_output(task["task_id"], (hyp, exp, diag))
+    diagnosis_record = gov.record_black_output(task["task_id"], (hyp, exp, diag))[-1]
 
     ok = c.apply_transition(task["task_id"], Trigger.DIAGNOSIS_ACCEPTED,
                             actor="black.diag-1", reason="diag accepted",
-                            evidence_refs=("log://diag",), request_id="r3")
+                                evidence_refs=(diagnosis_record.evidence_id,), request_id="r3")
     assert ok["success"] is True
     assert c.get_task(task["task_id"])["state"] == TaskState.PLAN.value
 
     kinds = {r.record_type for r in gov.ledger.records}
     assert {"observation", "hypothesis", "experiment", "diagnosis"} <= kinds
     assert gov.ledger.verify_chain()
-    assert gov.ledger.verify_manifest()
+    assert not gov.ledger.verify_manifest()
 
     validate_scope(DEV)

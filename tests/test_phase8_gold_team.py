@@ -219,9 +219,13 @@ def test_white_records_gold_output(tmp_path) -> None:
         actor="gold.plan-1", pipeline_id="pipe-cd", title="golden cd",
         version="1.0", stages=("build", "promote"), triggers=("push",),
     )
+    approval = gov.record_approval(
+        "task-1", gated_action="policy_exception", approver="black.diag-1",
+        approver_role="security-lead", scope={"repo": "demo"}, author="gold.plan-1",
+    )
     exc = gold.grant_exception(
         task_id="task-1", actor="gold.plan-1", standard_ref="std-secrets@1.0",
-        approver="platform-owner", approval_ref="evt-approval-1",
+        approver="security-lead", approval_ref=approval.approval_id,
         scope="staging", expiry_epoch=FUTURE, reason="monitoring window",
     )
 
@@ -232,9 +236,9 @@ def test_white_records_gold_output(tmp_path) -> None:
     assert records[0].payload["version"] == "1.0"
     assert records[1].payload["stages"] == ["build", "promote"]
     assert records[2].payload["expiry_epoch"] == FUTURE
-    assert records[2].payload["approval_ref"] == "evt-approval-1"
+    assert records[2].payload["approval_ref"] == approval.approval_id
     assert gov.ledger.verify_chain()
-    assert gov.ledger.verify_manifest()
+    assert not gov.ledger.verify_manifest()
 
 
 def test_white_refuses_non_gold_items(tmp_path) -> None:
@@ -270,11 +274,14 @@ def test_gold_supports_finding_remediation_chain(tmp_path) -> None:
     )
     gov.record_red_output("task-1", (finding,))
 
+    plan = gov.record_approval("task-1", gated_action="plan_approval",
+                               approver="white.sys-1", scope={"repo": "demo"},
+                               author="silver.build-1", approver_role="ci-operator")
     change = SilverTeam(registry=reg).present_change(
         task_id="task-1", actor="silver.build-1",
         change_type="branch", branch="isolated/no-tokens",
         files=("tracing.cfg",), diff_summary="redact tokens",
-        plan_refs=(finding.finding_id, standard.standard_id),
+        plan_refs=(plan.evidence_id,),
         rollback_metadata={"steps": ["git revert no-tokens"]},
     )
     gov.record_silver_output("task-1", (change,))
@@ -286,10 +293,12 @@ def test_gold_supports_finding_remediation_chain(tmp_path) -> None:
     )
     gov.record_yellow_output("task-1", (re_test,))
 
-    closure = PurpleTeam(registry=reg).validate_closure(
+    purple = PurpleTeam(registry=reg)
+    purple.governance = gov
+    closure = purple.validate_closure(
         task_id="task-1", actor="purple.clo-1",
         finding_ref=finding.finding_id, controls=("redacted tracing",),
-        re_test_refs=(re_test.result_id,), verdict="closed",
+        re_test_refs=(gov.ledger.records[-1].evidence_id,), verdict="closed",
     )
     gov.record_purple_output("task-1", (closure,))
 
@@ -298,4 +307,4 @@ def test_gold_supports_finding_remediation_chain(tmp_path) -> None:
     standard_ref = [r for r in gov.ledger.records if r.record_type == "standard"][0]
     assert standard_ref.payload["domain"] == "secrets_policy"
     assert gov.ledger.verify_chain()
-    assert gov.ledger.verify_manifest()
+    assert not gov.ledger.verify_manifest()

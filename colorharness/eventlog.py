@@ -17,6 +17,9 @@ from typing import Any, Optional
 
 from ._common import now_utc_iso
 from .ledger import canonical_json, sha256_hex
+from .secrets import raise_if_secret
+
+GENESIS_HASH = "0" * 64
 
 
 class CorruptEventStoreError(Exception):
@@ -60,11 +63,18 @@ class Event:
     evidence_refs: tuple[str, ...] = ()
     payload: dict[str, Any] = field(default_factory=dict)
     payload_fingerprint: str = ""
+    prev_hash: str = GENESIS_HASH
+    content_hash: str = ""
 
     def to_dict(self) -> dict:
         data = asdict(self)
         data["evidence_refs"] = list(self.evidence_refs)
         return data
+
+    def body_hash(self) -> str:
+        body = self.to_dict()
+        body.pop("content_hash", None)
+        return sha256_hex(canonical_json(body))
 
     @classmethod
     def from_dict(cls, data: dict) -> "Event":
@@ -87,6 +97,8 @@ class Event:
             evidence_refs=tuple(data.get("evidence_refs") or ()),
             payload=data.get("payload") or {},
             payload_fingerprint=data.get("payload_fingerprint", ""),
+            prev_hash=data.get("prev_hash", GENESIS_HASH),
+            content_hash=data.get("content_hash", ""),
         )
 
 
@@ -103,18 +115,24 @@ class EventLog:
             return
         with open(path, "r", encoding="utf-8") as fh:
             lines = fh.readlines()
+        previous = GENESIS_HASH
         for index, line in enumerate(lines):
             line = line.strip()
             if not line:
-                continue
+                raise CorruptEventStoreError(
+                    f"corrupt blank event line {index + 1} in {path}"
+                )
             try:
                 event = Event.from_dict(json.loads(line))
             except (ValueError, KeyError, TypeError):
-                if index == len(lines) - 1:
-                    continue
                 raise CorruptEventStoreError(
                     f"corrupt event line {index + 1} in {path}: {line[:80]!r}"
                 )
+            if event.prev_hash != previous or not event.content_hash:
+                raise CorruptEventStoreError(f"event hash chain mismatch at line {index + 1}")
+            if event.body_hash() != event.content_hash:
+                raise CorruptEventStoreError(f"event content hash mismatch at line {index + 1}")
+            previous = event.content_hash
             self.events.append(event)
             self._remember(event)
 
@@ -163,6 +181,9 @@ class EventLog:
         return result
 
     def append(self, event: Event, fingerprint: str = "") -> dict:
+        raise_if_secret(event.to_dict())
+        if not self.verify_chain():
+            raise CorruptEventStoreError("event log hash chain is corrupt")
         key = (event.actor, event.request_id)
         existing = self._seen.get(key)
         if existing is not None:
@@ -181,6 +202,9 @@ class EventLog:
             return cached
         if fingerprint:
             event = dataclasses.replace(event, payload_fingerprint=fingerprint)
+        previous = self.events[-1].content_hash if self.events else GENESIS_HASH
+        event = dataclasses.replace(event, prev_hash=previous, content_hash="")
+        event = dataclasses.replace(event, content_hash=event.body_hash())
         result = self._result_for(event)
         self.events.append(event)
         self._remember(event)
@@ -189,3 +213,11 @@ class EventLog:
 
     def __len__(self) -> int:
         return len(self.events)
+
+    def verify_chain(self) -> bool:
+        previous = GENESIS_HASH
+        for event in self.events:
+            if event.prev_hash != previous or event.body_hash() != event.content_hash:
+                return False
+            previous = event.content_hash
+        return True

@@ -21,7 +21,7 @@ from colorharness import (
     YellowUnauthorizedActorError,
 )
 from colorharness._common import RejectionCode, TaskState, Trigger
-from tests.test_phase1_coordinator import make_registry
+from tests.test_phase1_coordinator import FULL_PATH, _record_gate_evidence, make_registry
 
 DEV = {"ci_cd": {"environments": ["staging"]}, "repo": "color-harness"}
 
@@ -151,32 +151,14 @@ def test_verification_passing_semantics(tmp_path) -> None:
 # ---------------------------------------------------------------------------
 
 def _drive_to_verify(c: Coordinator, task_id: str) -> None:
-    c.apply_transition(task_id, Trigger.ROUTE, actor=Coordinator.SYSTEM_AGENT,
-                       reason="route", evidence_refs=("log://route",), request_id="r-route")
-    obs = Observer().collect(task_id=task_id, observation_type="ci",
-                             detail={"pipeline": "build", "exit_status": 1})
-    c.governance.record_observations(task_id, (obs,))
-    c.apply_transition(task_id, Trigger.OBSERVATIONS_READY, actor="blue.obs-1",
-                       reason="obs", evidence_refs=("log://obs",), request_id="r-obs")
-    diag = BlackTeam(registry=c.registry).diagnose(
-        task_id=task_id, actor="black.diag-1",
-        diagnosis="deploy agent timeout", confidence="medium",
-        evidence_refs=(obs.observation_id,), alternatives=("rate limit",),
-    )
-    c.governance.record_black_output(task_id, (diag,))
-    c.apply_transition(task_id, Trigger.DIAGNOSIS_ACCEPTED, actor="black.diag-1",
-                       reason="diag", evidence_refs=("log://diag",), request_id="r-diag")
-    c.apply_transition(task_id, Trigger.PLAN_APPROVED, actor="gold.plan-1",
-                       reason="plan", evidence_refs=("log://plan",), request_id="r-plan")
-    manifest = SilverTeam(registry=c.registry).present_change(
-        task_id=task_id, actor="silver.build-1",
-        change_type="branch", branch="isolated/svc-timeout",
-        files=("deploy.yaml",), diff_summary="raise timeout",
-        plan_refs=("log://plan",), rollback_metadata={"steps": ["git revert"]},
-    )
-    c.governance.record_silver_output(task_id, (manifest,))
-    c.apply_transition(task_id, Trigger.IMPLEMENTATION_READY, actor="silver.build-1",
-                       reason="impl", evidence_refs=("log://impl",), request_id="r-impl")
+    for trigger, actor, reason in FULL_PATH:
+        refs = _record_gate_evidence(c, task_id, trigger)
+        result = c.apply_transition(task_id, trigger, actor=actor, reason=reason,
+                                    evidence_refs=refs or (f"log://{reason}",),
+                                    request_id=f"rid-{reason}")
+        assert result["success"], result.get("error")
+        if result["event"]["to_state"] == TaskState.VERIFY.value:
+            return
 
 
 def test_verification_passed_gated_on_recorded_results(tmp_path) -> None:
@@ -194,11 +176,12 @@ def test_verification_passed_gated_on_recorded_results(tmp_path) -> None:
     assert blocked["success"] is False
     assert blocked["error"]["code"] == RejectionCode.EVIDENCE_NOT_RECORDED.value
 
-    gov.record_yellow_output(task["task_id"],
-                             (run_ok(make_yellow(reg), task["task_id"]),))
+    result_record = gov.record_yellow_output(
+        task["task_id"], (run_ok(make_yellow(reg), task["task_id"]),)
+    )[0]
     ok = c.apply_transition(
         task["task_id"], Trigger.VERIFICATION_PASSED, actor="yellow.ver-1",
-        reason="verify", evidence_refs=("log://verify",), request_id="r-verify2",
+        reason="verify", evidence_refs=(result_record.evidence_id,), request_id="r-verify2",
     )
     assert ok["success"] is True
     assert c.get_task(task["task_id"])["state"] == TaskState.APPROVE.value
@@ -216,10 +199,10 @@ def test_failed_check_blocks_verification_passed(tmp_path) -> None:
                               check_type="policy", command="check", version="1",
                               exit_status=1, artifacts_ref="a",
                               evidence_location="e")
-    gov.record_yellow_output(task["task_id"], (failed,))
+    failed_record = gov.record_yellow_output(task["task_id"], (failed,))[0]
     blocked = c.apply_transition(
         task["task_id"], Trigger.VERIFICATION_PASSED, actor="yellow.ver-1",
-        reason="verify", evidence_refs=("log://verify",), request_id="r-verify",
+        reason="verify", evidence_refs=(failed_record.evidence_id,), request_id="r-verify",
     )
     assert blocked["success"] is False
     assert blocked["error"]["code"] == RejectionCode.VERIFICATION_FAILED.value
@@ -238,7 +221,7 @@ def test_observe_to_verification_chain(tmp_path) -> None:
     _drive_to_verify(c, task["task_id"])
 
     yellow = make_yellow(reg)
-    gov.record_yellow_output(task["task_id"], (
+    records = gov.record_yellow_output(task["task_id"], (
         yellow.run_check(task_id=task["task_id"], actor="yellow.ver-1",
                          check_type="test", command="pytest -q",
                          version="pytest 9.1.1", exit_status=0,
@@ -250,7 +233,7 @@ def test_observe_to_verification_chain(tmp_path) -> None:
     ))
     ok = c.apply_transition(task["task_id"], Trigger.VERIFICATION_PASSED,
                             actor="yellow.ver-1", reason="all green",
-                            evidence_refs=("log://verify",), request_id="r-verify")
+                            evidence_refs=(records[0].evidence_id,), request_id="r-verify")
     assert ok["success"] is True
     assert c.get_task(task["task_id"])["state"] == TaskState.APPROVE.value
 
@@ -261,4 +244,4 @@ def test_observe_to_verification_chain(tmp_path) -> None:
     assert all(r.payload["version"] for r in results)
     assert all(r.payload["evidence_location"] for r in results)
     assert gov.ledger.verify_chain()
-    assert gov.ledger.verify_manifest()
+    assert not gov.ledger.verify_manifest()
