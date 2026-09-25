@@ -69,11 +69,10 @@ class PurpleTeam:
 
     def __init__(self, registry=None):
         self.registry = registry
+        self.governance = None
 
     def _check_actor(self, actor: str) -> None:
-        if self.registry is None:
-            return
-        if not self.registry.is_registered(actor):
+        if self.registry is None or not self.registry.is_registered(actor):
             raise PurpleUnauthorizedActorError(f"actor '{actor}' is not registered")
         if self.registry.team_of(actor) != "purple":
             raise PurpleUnauthorizedActorError(
@@ -92,6 +91,17 @@ class PurpleTeam:
         notes: str = "",
     ) -> Closure:
         self._check_actor(actor)
+        if verdict == "closed":
+            if self.governance is None:
+                raise PurpleNoReTestError("purple needs ledger access to verify re-test evidence")
+            for ref in re_test_refs:
+                record = self.governance.ledger.get(ref)
+                if (record is None or record.task_id != task_id
+                        or record.record_type != "test_result"
+                        or (record.payload or {}).get("exit_status") != 0):
+                    raise PurpleNoReTestError(
+                        f"re-test reference '{ref}' is not a passing test result for this task"
+                    )
         return Closure(
             closure_id=f"clo-{uuid.uuid4().hex[:12]}",
             task_id=task_id,

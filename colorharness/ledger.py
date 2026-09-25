@@ -51,7 +51,7 @@ PAYLOAD_REQUIREMENTS: dict[str, frozenset[str]] = {
     "standard": frozenset({"standard_id", "version", "title", "domain", "policies"}),
     "pipeline": frozenset({"pipeline_id", "version", "title", "stages", "triggers"}),
     "exception": frozenset({"standard_ref", "approver", "approval_ref", "scope", "expiry_epoch"}),
-    "approval": frozenset({"approver", "scope", "expiry", "gated_action", "decision_id"}),
+    "approval": frozenset({"approval_id", "approver", "scope", "expiry", "gated_action", "decision_id"}),
     "decision": frozenset({"decision_type", "decider", "reasoning", "scope"}),
     "block": frozenset({"reason_code", "condition", "evidence_refs"}),
     "release": frozenset({"artifact_ref", "target_environment", "plan_ref", "approval_refs"}),
@@ -308,5 +308,10 @@ class EvidenceLedger:
             canonical_json({"records": current["entries"], "count": len(current["entries"])})
         )
         if expected is None:
-            return recomputed == current["manifest_digest"]
+            return False
         return recomputed == expected
+
+    def get(self, evidence_id: str) -> Optional[EvidenceRecord]:
+        """Resolve one evidence identifier against this ledger."""
+        return next((record for record in self._records
+                     if record.evidence_id == evidence_id), None)

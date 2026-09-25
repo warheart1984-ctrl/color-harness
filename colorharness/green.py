@@ -124,9 +124,7 @@ class GreenTeam:
         self.governance = governance
 
     def _check_actor(self, actor: str) -> None:
-        if self.registry is None:
-            return
-        if not self.registry.is_registered(actor):
+        if self.registry is None or not self.registry.is_registered(actor):
             raise GreenUnauthorizedActorError(f"actor '{actor}' is not registered")
         if self.registry.team_of(actor) != "green":
             raise GreenUnauthorizedActorError(
@@ -172,13 +170,17 @@ class GreenTeam:
             raise InvalidReleasePlanError(
                 "green cannot execute a release without a release plan"
             )
-        if self.governance is not None:
-            valid = set(self.governance.valid_approval_refs(task_id, "release"))
-            if not approvals or not set(approvals) <= valid:
-                raise GreenReleaseNotApproved(
-                    "green cannot execute a release without recorded approval "
-                    "for the release action"
-                )
+        if self.governance is None:
+            raise GreenReleaseNotApproved("green requires White governance to execute releases")
+        if self.governance.is_paused(task_id):
+            raise GreenReleaseNotApproved("green cannot release while White has paused the task")
+        valid = set(self.governance.valid_approval_refs(task_id, "release"))
+        quorum = self.governance.approval_quorum_met(task_id, "release")
+        if not quorum or not approvals or not set(approvals) <= valid:
+            raise GreenReleaseNotApproved(
+                "green cannot execute a release without recorded approval "
+                "for the release action"
+            )
         return Release(
             release_id=f"rel-{uuid.uuid4().hex[:12]}",
             task_id=task_id,

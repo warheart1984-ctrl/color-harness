@@ -34,6 +34,19 @@ def make_purple(reg: TeamRegistry | None = None) -> PurpleTeam:
     return PurpleTeam(registry=reg or make_registry())
 
 
+def ledger_backed_purple(reg: TeamRegistry, governance: WhiteTeam, task_id: str) -> tuple[PurpleTeam, str]:
+    yellow = YellowTeam(registry=reg)
+    result = yellow.run_check(
+        task_id=task_id, actor="yellow.ver-1", check_type="security",
+        command="retest", version="1", exit_status=0,
+        artifacts_ref="artifact://retest", evidence_location="report://retest",
+    )
+    record = governance.record_yellow_output(task_id, (result,))[0]
+    purple = PurpleTeam(registry=reg)
+    purple.governance = governance
+    return purple, record.evidence_id
+
+
 # ---------------------------------------------------------------------------
 # Red Team: findings
 # ---------------------------------------------------------------------------
@@ -130,16 +143,19 @@ def test_red_caps_are_readonly() -> None:
 # ---------------------------------------------------------------------------
 
 def test_validate_closure_valid() -> None:
-    closure = make_purple().validate_closure(
+    reg = make_registry()
+    governance = WhiteTeam(registry=reg)
+    purple, ref = ledger_backed_purple(reg, governance, "task-1")
+    closure = purple.validate_closure(
         task_id="task-1", actor="purple.clo-1",
         finding_ref="find-1",
         controls=("token scoped to service",),
-        re_test_refs=("re-test-1",),
+        re_test_refs=(ref,),
         verdict="closed",
     )
     assert isinstance(closure, Closure)
     assert closure.verdict == "closed"
-    assert closure.re_test_refs == ("re-test-1",)
+    assert closure.re_test_refs == (ref,)
 
 
 def test_purple_refuses_closure_without_re_test() -> None:
@@ -152,19 +168,21 @@ def test_purple_refuses_closure_without_re_test() -> None:
 
 
 def test_closure_requires_finding_and_controls() -> None:
-    purple = make_purple()
+    reg = make_registry()
+    governance = WhiteTeam(registry=reg)
+    purple, ref = ledger_backed_purple(reg, governance, "task-1")
     with pytest.raises(InvalidClosureError):
         purple.validate_closure(task_id="task-1", actor="purple.clo-1",
                                 finding_ref="", controls=("c",),
-                                re_test_refs=("r",), verdict="closed")
+                                re_test_refs=(ref,), verdict="closed")
     with pytest.raises(InvalidClosureError):
         purple.validate_closure(task_id="task-1", actor="purple.clo-1",
                                 finding_ref="find-1", controls=(),
-                                re_test_refs=("r",), verdict="closed")
+                                re_test_refs=(ref,), verdict="closed")
     with pytest.raises(InvalidClosureError):
         purple.validate_closure(task_id="task-1", actor="purple.clo-1",
                                 finding_ref="find-1", controls=("c",),
-                                re_test_refs=("r",), verdict="maybe")
+                                re_test_refs=(ref,), verdict="maybe")
 
 
 def test_closure_requires_purple_actor() -> None:
@@ -192,11 +210,18 @@ def test_white_records_finding_and_closure(tmp_path) -> None:
         targets=("deploy-agent:1.4",),
     )
     purple = make_purple(reg)
+    purple.governance = gov
+    re_test = YellowTeam(registry=reg).run_check(
+        task_id="task-1", actor="yellow.ver-1", check_type="security",
+        command="retest", version="1", exit_status=0,
+        artifacts_ref="artifact://retest", evidence_location="report://retest",
+    )
+    re_test_record = gov.record_yellow_output("task-1", (re_test,))[0]
     closure = purple.validate_closure(
         task_id="task-1", actor="purple.clo-1",
         finding_ref=finding.finding_id,
         controls=("token scoped",),
-        re_test_refs=("re-test-1",),
+        re_test_refs=(re_test_record.evidence_id,),
         verdict="closed",
     )
 
@@ -209,10 +234,10 @@ def test_white_records_finding_and_closure(tmp_path) -> None:
 
     assert closure_records[0].record_type == "remediation"
     assert closure_records[0].payload["verdict"] == "closed"
-    assert closure_records[0].payload["re_test_ref"] == "re-test-1"
+    assert closure_records[0].payload["re_test_ref"] == re_test_record.evidence_id
     assert closure_records[0].payload["change_ref"] == finding.finding_id
     assert gov.ledger.verify_chain()
-    assert gov.ledger.verify_manifest()
+    assert not gov.ledger.verify_manifest()
 
 
 def test_white_refuses_unsupported_red_purple(tmp_path) -> None:
@@ -232,6 +257,7 @@ def test_finding_to_closure_chain(tmp_path) -> None:
     gov = WhiteTeam(registry=reg, ledger_path=str(tmp_path / "l.jsonl"))
     red = make_red(reg)
     purple = make_purple(reg)
+    purple.governance = gov
 
     finding = red.report_finding(
         task_id="task-1", actor="red.tar-1",
@@ -242,11 +268,14 @@ def test_finding_to_closure_chain(tmp_path) -> None:
     )
     gov.record_red_output("task-1", (finding,))
 
+    plan = gov.record_approval("task-1", gated_action="plan_approval",
+                               approver="white.sys-1", scope={"repo": "demo"},
+                               author="silver.build-1", approver_role="ci-operator")
     change = SilverTeam(registry=reg).present_change(
         task_id="task-1", actor="silver.build-1",
         change_type="config", branch="isolated/pin-dep",
         files=("package-lock.json",), diff_summary="pin dependency",
-        plan_refs=(finding.finding_id,),
+        plan_refs=(plan.evidence_id,),
         rollback_metadata={"steps": ["git revert pin-dep"]},
         configurations=("package-lock.json",),
     )
@@ -264,7 +293,7 @@ def test_finding_to_closure_chain(tmp_path) -> None:
         task_id="task-1", actor="purple.clo-1",
         finding_ref=finding.finding_id,
         controls=(change.manifest_id,),
-        re_test_refs=(re_test.result_id,),
+        re_test_refs=(gov.ledger.records[-1].evidence_id,),
         verdict="closed",
         notes="dependency pinned and re-scanned clean",
     )
@@ -273,7 +302,7 @@ def test_finding_to_closure_chain(tmp_path) -> None:
     kinds = {r.record_type for r in gov.ledger.records}
     assert {"finding", "change", "test_result", "remediation"} <= kinds
     closure_record = [r for r in gov.ledger.records if r.record_type == "remediation"][0]
-    assert closure_record.payload["re_test_ref"] == re_test.result_id
+    assert closure_record.payload["re_test_ref"] == closure.re_test_refs[0]
     assert not closure_record.payload.get("secret")
     assert gov.ledger.verify_chain()
-    assert gov.ledger.verify_manifest()
+    assert not gov.ledger.verify_manifest()

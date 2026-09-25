@@ -21,7 +21,7 @@ from .observer import FORBIDDEN_INTERPRETATION_KEYS, Observation
 from .purple import Closure
 from .red import Finding
 from .registry import APPROVER_ROLES, TeamRegistry
-from .risk import RiskClass, is_higher, normalize
+from .risk import RiskClass, classify_action, is_higher, max_risk, normalize
 from .scope import ScopeOutOfBoundsError, validate_scope
 from .silver import ChangeManifest
 from .yellow import VerificationResult
@@ -377,11 +377,22 @@ class WhiteTeam:
         author: Optional[str] = None,
         approver_role: Optional[str] = None,
     ) -> ApprovalRecord:
+        if not gated_action or gated_action.strip() == "*":
+            raise GovernanceError("approval must name one concrete gated action")
+        if (gated_action in {"release", "production_release", "rollback", "destructive_delete",
+                             "credential_rotation", "security_control_change", "scope_expansion",
+                             "production_deploy", "plan_approval", "policy_exception"} and not author):
+            raise GovernanceError("change-gated approval requires the author")
+        if author is None and gated_action in {"release", "production_release", "rollback", "production_deploy", "plan_approval"}:
+            raise GovernanceError("change-gated approval requires an author")
+        if author is not None and self.registry is not None and self.registry.is_registered(author) and self.registry.team_of(author) == "yellow":
+            from .yellow import YellowTeam
+            YellowTeam(self.registry).forbid_self_approval(author)
         if author is not None and approver == author:
             raise NoSelfApprovalError(
                 f"approver '{approver}' is the author of the change and may not approve it"
             )
-        role = self._resolve_approver_role(approver, approver_role, task_id)
+        role = self._resolve_approver_role(approver, approver_role, task_id, gated_action)
 
         approved_team = "unknown"
         if self.registry is not None and self.registry.is_registered(approver):
@@ -437,7 +448,10 @@ class WhiteTeam:
         approver: str,
         explicit: Optional[str],
         task_id: str,
+        gated_action: str,
     ) -> str:
+        risk = max_risk(self.current_risk(task_id), classify_action(gated_action)).value
+        eligible = RISK_AUTHORITY[risk]
         if explicit is not None:
             if explicit not in APPROVER_ROLES:
                 from .registry import UnknownRoleError
@@ -448,25 +462,29 @@ class WhiteTeam:
                 raise RoleRequiredError(
                     "approver_role is required when no registry is configured"
                 )
-            held = APPROVER_ROLES & self.registry.role_of(approver)
+            held = eligible & self.registry.role_of(approver)
             if not held:
-                raise RoleRequiredError(
-                    f"approver '{approver}' holds no reviewer role"
-                )
+                all_roles = APPROVER_ROLES & self.registry.role_of(approver)
+                if all_roles:
+                    raise RoleRiskForbidden(
+                        f"approver '{approver}' holds no role allowed for {risk} action '{gated_action}'"
+                    )
+                raise RoleRequiredError(f"approver '{approver}' holds no reviewer role")
             if len(held) > 1:
                 raise AmbiguousRoleError(
                     f"approver '{approver}' holds multiple roles {sorted(held)}; "
                     "pass approver_role explicitly"
                 )
             role = next(iter(held))
-        if self.registry is not None and not self.registry.has_role(approver, role):
+        if self.registry is None:
+            raise RoleRequiredError("approval quorum requires the team registry")
+        if not self.registry.has_role(approver, role):
             raise RoleRequiredError(
                 f"approver '{approver}' does not hold role '{role}'"
             )
-        risk = self.current_risk(task_id).value
-        if role not in RISK_AUTHORITY[risk]:
+        if role not in eligible:
             raise RoleRiskForbidden(
-                f"role '{role}' has no approval authority over {risk}-tier task '{task_id}'"
+                f"role '{role}' cannot approve '{gated_action}' at {risk} risk"
             )
         return role
 
@@ -511,7 +529,7 @@ class WhiteTeam:
             return False
         if approval.task_id != task_id:
             return False
-        if approval.gated_action not in (gated_action, "*"):
+        if approval.gated_action != gated_action:
             return False
         if approval_id in self._revoked:
             return False
@@ -549,7 +567,9 @@ class WhiteTeam:
         all required roles present (red = security-lead + platform-owner)
         and enough distinct approvers (red = 2, else 1).
         """
-        risk = self.current_risk(task_id).value
+        if self.registry is None:
+            return False
+        risk = max_risk(self.current_risk(task_id), classify_action(gated_action)).value
         required_roles = RISK_AUTHORITY[risk]
         quorum = QUORUM_COUNT[risk]
         covered_roles: set[str] = set()
@@ -565,10 +585,14 @@ class WhiteTeam:
                 continue
             if not approval.approver_role:
                 continue
-            if (
-                self.registry is not None
-                and not self.registry.has_role(approval.approver, approval.approver_role)
+            if risk == "red" and (
+                approval.approver_role not in RISK_AUTHORITY["red"]
+                or approval.approver_team == "red"
             ):
+                continue
+            if risk == "orange" and approval.approver_role not in RISK_AUTHORITY["orange"]:
+                continue
+            if not self.registry.has_role(approval.approver, approval.approver_role):
                 continue
             covered_roles.add(approval.approver_role)
             approvers.add(approval.approver)
@@ -581,6 +605,10 @@ class WhiteTeam:
         *,
         requested_scope: Optional[dict] = None,
     ) -> ApprovalRecord | None:
+        if not self.approval_quorum_met(
+            task_id, gated_action, requested_scope=requested_scope
+        ):
+            return None
         for approval in self._approvals.values():
             if self.approval_valid(
                 approval.approval_id, task_id, gated_action, requested_scope
@@ -599,10 +627,11 @@ class WhiteTeam:
         actor: str,
         reason: str,
     ) -> PauseRecord:
+        team = self._require_team_actor(actor, "white")
         record = self.ledger.append(
             "pause",
             actor=actor,
-            team="white",
+            team=team,
             source="governance://pause",
             payload={"actor": actor, "reason": reason},
             task_id=task_id,
@@ -624,13 +653,14 @@ class WhiteTeam:
         actor: str,
         reason: str,
     ) -> None:
+        team = self._require_team_actor(actor, "white")
         if task_id not in self._paused:
             return
-        paused = self._paused.pop(task_id)
+        paused = self._paused[task_id]
         self.ledger.append(
             "decision",
             actor=actor,
-            team="white",
+            team=team,
             source="governance://resume",
             payload={
                 "decision_type": "pause_lifted",
@@ -641,6 +671,33 @@ class WhiteTeam:
             task_id=task_id,
             refs=(paused.evidence_id,),
         )
+        self._paused.pop(task_id, None)
+
+    def _require_team_actor(self, actor: str, team: str) -> str:
+        if self.registry is None or not self.registry.is_registered(actor):
+            raise GovernanceError("a registered team actor is required")
+        actor_team = self.registry.team_of(actor)
+        if actor_team != team:
+            raise GovernanceError(f"actor must belong to team '{team}'")
+        return actor_team
+
+    def reference_resolves(
+        self, task_id: str, ref: str, record_types: set[str], *, plan_only: bool = False
+    ) -> bool:
+        for record in self.ledger.records:
+            if record.task_id != task_id or record.record_type not in record_types:
+                continue
+            payload = record.payload or {}
+            if plan_only and not (
+                record.record_type == "diagnosis"
+                or (record.record_type == "approval" and payload.get("gated_action") == "plan_approval")
+            ):
+                continue
+            if ref == record.evidence_id or ref in record.refs:
+                return True
+            if any(value == ref for key, value in payload.items() if key.endswith("_id")):
+                return True
+        return False
 
     def is_paused(self, task_id: str) -> bool:
         return task_id in self._paused
@@ -706,6 +763,11 @@ class WhiteTeam:
     ) -> list[EvidenceRecord]:
         """Record collected facts as observation evidence. White owns the write;
         the observer itself holds no ledger handle."""
+        if self.registry is None or not self.registry.is_registered(actor):
+            raise GovernanceError("a registered White or observer actor is required")
+        actor_team = self.registry.team_of(actor)
+        if actor_team not in {"white", "observer"}:
+            raise GovernanceError("only White or Observer may record observations")
         records: list[EvidenceRecord] = []
         for obs in observations:
             forbidden = set(obs.detail) & FORBIDDEN_INTERPRETATION_KEYS
@@ -718,7 +780,7 @@ class WhiteTeam:
             record = self.ledger.append(
                 "observation",
                 actor=actor,
-                team=team,
+                team=actor_team,
                 source=obs.source,
                 payload=obs.payload(),
                 task_id=task_id,
@@ -738,6 +800,7 @@ class WhiteTeam:
     ) -> list[EvidenceRecord]:
         """Record blue-team interpretations (alerts, recommendations, runbook
         entries) as evidence so they are auditable and attributable."""
+        self._require_team_actor(actor, "white")
         records: list[EvidenceRecord] = []
         for output in outputs:
             kind = type(output).__name__.lower()
@@ -799,8 +862,20 @@ class WhiteTeam:
     ) -> list[EvidenceRecord]:
         """Record black-team interpretations (hypotheses, experiments,
         diagnoses) as evidence so they are attributable and auditable."""
+        self._require_team_actor(actor, "white")
         records: list[EvidenceRecord] = []
         for output in outputs:
+            evidence_refs = tuple(getattr(output, "evidence_refs", ()))
+            if isinstance(output, Experiment):
+                evidence_refs = (output.inputs_ref,)
+                allowed_refs = {"observation"}
+            else:
+                allowed_refs = {"observation", "experiment"}
+            for ref in evidence_refs:
+                if not self.reference_resolves(task_id, ref, allowed_refs):
+                    raise GovernanceError(
+                        f"black evidence reference '{ref}' is not recorded for this task"
+                    )
             if isinstance(output, Hypothesis):
                 payload: dict[str, Any] = {
                     "hypothesis_id": output.hypothesis_id,
@@ -858,8 +933,16 @@ class WhiteTeam:
         team: str = "white",
     ) -> list[EvidenceRecord]:
         """Record silver-team change manifests as `change` evidence."""
+        self._require_team_actor(actor, "white")
         records: list[EvidenceRecord] = []
         for manifest in manifests:
+            for ref in manifest.plan_refs:
+                if not self.reference_resolves(
+                    task_id, ref, {"approval", "diagnosis"}, plan_only=True
+                ):
+                    raise GovernanceError(
+                        f"silver plan reference '{ref}' is not recorded for this task"
+                    )
             records.append(
                 self.ledger.append(
                     "change",
@@ -893,6 +976,7 @@ class WhiteTeam:
         team: str = "white",
     ) -> list[EvidenceRecord]:
         """Record yellow-team verification results as `test_result` evidence."""
+        self._require_team_actor(actor, "white")
         records: list[EvidenceRecord] = []
         for result in results:
             records.append(
@@ -925,6 +1009,7 @@ class WhiteTeam:
         team: str = "white",
     ) -> list[EvidenceRecord]:
         """Record red-team findings as `finding` evidence."""
+        self._require_team_actor(actor, "white")
         records: list[EvidenceRecord] = []
         for finding in findings:
             records.append(
@@ -962,6 +1047,7 @@ class WhiteTeam:
         team: str = "white",
     ) -> list[EvidenceRecord]:
         """Record purple-team closure verdicts as `remediation` evidence."""
+        self._require_team_actor(actor, "white")
         records: list[EvidenceRecord] = []
         for closure in closures:
             records.append(
@@ -995,6 +1081,7 @@ class WhiteTeam:
         team: str = "white",
     ) -> list[EvidenceRecord]:
         """Record gold-team standards, pipelines, and exceptions as evidence."""
+        self._require_team_actor(actor, "white")
         records: list[EvidenceRecord] = []
         for item in items:
             if isinstance(item, Standard):
@@ -1037,6 +1124,18 @@ class WhiteTeam:
                     )
                 )
             elif isinstance(item, ExceptionGrant):
+                approval = next((approval for approval in self._approvals.values()
+                                 if item.approval_ref in {approval.approval_id, approval.evidence_id}), None)
+                if (approval is None
+                        or approval.approver_role != item.approver
+                        or approval.approver == item.actor
+                        or not self.approval_valid(
+                            approval.approval_id, task_id, approval.gated_action
+                        )
+                        or approval.approver_role not in {"security-lead", "platform-owner"}):
+                    raise GovernanceError(
+                        "gold exception requires a live White approval from the named reviewer role"
+                    )
                 records.append(
                     self.ledger.append(
                         "exception",
@@ -1134,6 +1233,17 @@ class WhiteTeam:
         return any(
             r.task_id == task_id and r.record_type == record_type
             for r in self.ledger.records
+        )
+
+    def has_referenced_evidence(
+        self, task_id: str, record_type: str, evidence_refs: tuple[str, ...]
+    ) -> bool:
+        """Require a transition reference to resolve to same-task ledger evidence."""
+        return any(
+            (record := self.ledger.get(ref)) is not None
+            and record.task_id == task_id
+            and record.record_type == record_type
+            for ref in evidence_refs
         )
 
     def valid_approval_refs(self, task_id: str, gated_action: str) -> tuple[str, ...]:

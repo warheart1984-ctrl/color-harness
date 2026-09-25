@@ -104,9 +104,7 @@ class SilverTeam:
         self.registry = registry
 
     def _check_actor(self, actor: str) -> None:
-        if self.registry is None:
-            return
-        if not self.registry.is_registered(actor):
+        if self.registry is None or not self.registry.is_registered(actor):
             raise SilverUnauthorizedActorError(f"actor '{actor}' is not registered")
         if self.registry.team_of(actor) != "silver":
             raise SilverUnauthorizedActorError(

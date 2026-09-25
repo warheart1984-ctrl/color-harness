@@ -16,6 +16,10 @@ SECRET_PATTERNS: dict[str, re.Pattern] = {
     "ghp_token": re.compile(r"\bghp_[A-Za-z0-9]{20,}\b"),
     "aws_access_key_id": re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
     "private_key_header": re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----"),
+    "jwt": re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"),
+    "slack_bot_token": re.compile(r"\bxoxb-[0-9A-Za-z-]{20,}\b"),
+    "azure_client_secret": re.compile(r"(?i)\b(?:azure[_-]?client[_-]?secret|client[_-]?secret)\s*[:=]\s*['\"]?[A-Za-z0-9_~.-]{16,}"),
+    "npm_token": re.compile(r"\bnpm_[A-Za-z0-9]{20,}\b"),
 }
 
 

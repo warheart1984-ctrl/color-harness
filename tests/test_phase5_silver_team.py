@@ -21,7 +21,7 @@ from colorharness import (
 )
 from colorharness._common import RejectionCode, TaskState, Trigger
 from colorharness.registry import TEAM_CHARTER
-from tests.test_phase1_coordinator import make_registry
+from tests.test_phase1_coordinator import FULL_PATH, _record_gate_evidence, make_registry
 
 DEV = {"ci_cd": {"environments": ["staging"]}, "repo": "color-harness"}
 
@@ -144,11 +144,14 @@ def test_silver_cannot_merge_or_deploy() -> None:
 
 def test_white_records_change_evidence(tmp_path) -> None:
     gov = WhiteTeam(registry=make_registry(), ledger_path=str(tmp_path / "l.jsonl"))
+    plan = gov.record_approval("task-1", gated_action="plan_approval",
+                               approver="white.sys-1", scope=DEV,
+                               author="silver.build-1", approver_role="ci-operator")
     manifest = make_silver().present_change(
         task_id="task-1", actor="silver.build-1",
         change_type="config", branch="isolated/svc-timeout",
         files=("deploy.yaml",), diff_summary="raise timeout",
-        plan_refs=("dec-plan-1",), rollback_metadata=rollback_meta(),
+        plan_refs=(plan.evidence_id,), rollback_metadata=rollback_meta(),
     )
     records = gov.record_silver_output("task-1", (manifest,))
     assert len(records) == 1
@@ -156,8 +159,8 @@ def test_white_records_change_evidence(tmp_path) -> None:
     assert record.record_type == "change"
     assert record.task_id == "task-1"
     assert record.payload["change_type"] == "config"
-    assert record.payload["plan_refs"] == ["dec-plan-1"]
-    assert ("dec-plan-1",) == tuple(record.refs)
+    assert record.payload["plan_refs"] == [plan.evidence_id]
+    assert (plan.evidence_id,) == tuple(record.refs)
     assert gov.ledger.verify_chain()
 
 
@@ -188,23 +191,14 @@ def test_white_records_change_rejects_secret(tmp_path) -> None:
 # ---------------------------------------------------------------------------
 
 def _drive_to_plan(c: Coordinator, task_id: str) -> None:
-    c.apply_transition(task_id, Trigger.ROUTE, actor=Coordinator.SYSTEM_AGENT,
-                       reason="route", evidence_refs=("log://route",), request_id="r-route")
-    obs = Observer().collect(task_id=task_id, observation_type="ci",
-                             detail={"pipeline": "build", "exit_status": 1})
-    c.governance.record_observations(task_id, (obs,))
-    c.apply_transition(task_id, Trigger.OBSERVATIONS_READY, actor="blue.obs-1",
-                       reason="obs", evidence_refs=("log://obs",), request_id="r-obs")
-    diag = BlackTeam(registry=c.registry).diagnose(
-        task_id=task_id, actor="black.diag-1",
-        diagnosis="deploy agent timeout", confidence="medium",
-        evidence_refs=(obs.observation_id,), alternatives=("rate limit",),
-    )
-    c.governance.record_black_output(task_id, (diag,))
-    c.apply_transition(task_id, Trigger.DIAGNOSIS_ACCEPTED, actor="black.diag-1",
-                       reason="diag", evidence_refs=("log://diag",), request_id="r-diag")
-    c.apply_transition(task_id, Trigger.PLAN_APPROVED, actor="gold.plan-1",
-                       reason="plan", evidence_refs=("log://plan",), request_id="r-plan")
+    for trigger, actor, reason in FULL_PATH:
+        refs = _record_gate_evidence(c, task_id, trigger)
+        result = c.apply_transition(task_id, trigger, actor=actor, reason=reason,
+                                    evidence_refs=refs or (f"log://{reason}",),
+                                    request_id=f"rid-{reason}")
+        assert result["success"], result.get("error")
+        if result["event"]["to_state"] == TaskState.BUILD.value:
+            return
 
 
 def test_implementation_ready_gated_on_recorded_change(tmp_path) -> None:
@@ -227,26 +221,25 @@ def test_implementation_ready_gated_on_recorded_change(tmp_path) -> None:
         task_id=task["task_id"], actor="silver.build-1",
         change_type="branch", branch="isolated/svc-timeout",
         files=("deploy.yaml",), diff_summary="raise timeout",
-        plan_refs=("log://plan",), rollback_metadata=rollback_meta(),
+        plan_refs=(next(r.evidence_id for r in reversed(gov.ledger.records)
+                       if r.task_id == task["task_id"] and r.record_type == "approval"
+                       and r.payload.get("gated_action") == "plan_approval"),),
+        rollback_metadata=rollback_meta(),
     )
-    gov.record_silver_output(task["task_id"], (manifest,))
+    change_record = gov.record_silver_output(task["task_id"], (manifest,))[0]
     ok = c.apply_transition(
         task["task_id"], Trigger.IMPLEMENTATION_READY, actor="silver.build-1",
-        reason="impl", evidence_refs=("log://impl",), request_id="r-impl2",
+        reason="impl", evidence_refs=(change_record.evidence_id,), request_id="r-impl2",
     )
     assert ok["success"] is True
     assert c.get_task(task["task_id"])["state"] == TaskState.VERIFY.value
 
 
-def test_implementation_ready_ignored_without_governance(tmp_path) -> None:
-    c = Coordinator(registry=make_registry(), store_path=str(tmp_path / "e.jsonl"))
-    task = c.create_task(title="t", scope={})
-    from tests.test_phase1_coordinator import FULL_PATH
-    for trigger, actor, reason in FULL_PATH:
-        c.apply_transition(task["task_id"], trigger, actor=actor, reason=reason,
-                           evidence_refs=(f"log://{reason}",),
-                           request_id=f"rid-{trigger.value}")
-    assert c.get_task(task["task_id"])["state"] == TaskState.CLOSED.value
+def test_implementation_gate_requires_white(tmp_path) -> None:
+    import pytest
+    reg = make_registry()
+    with pytest.raises(ValueError):
+        Coordinator(registry=reg, store_path=str(tmp_path / "e.jsonl"), governance=None)
 
 
 # ---------------------------------------------------------------------------
@@ -265,16 +258,18 @@ def test_observe_to_implementation_chain(tmp_path) -> None:
         change_type="branch", branch="isolated/svc-timeout",
         files=("deploy.yaml", "service.py"),
         diff_summary="raise deploy agent timeout from 30s to 90s",
-        plan_refs=("log://plan",),
+        plan_refs=(next(r.evidence_id for r in reversed(gov.ledger.records)
+                       if r.task_id == task["task_id"] and r.record_type == "approval"
+                       and r.payload.get("gated_action") == "plan_approval"),),
         rollback_metadata={"steps": ["git revert <sha>"], "owner": "release-ops"},
         resources=("pipeline:build",),
         configurations=("deploy.yaml",),
         approval_scope=DEV,
     )
-    gov.record_silver_output(task["task_id"], (manifest,))
+    change_record = gov.record_silver_output(task["task_id"], (manifest,))[0]
     ok = c.apply_transition(
         task["task_id"], Trigger.IMPLEMENTATION_READY, actor="silver.build-1",
-        reason="implementation ready", evidence_refs=("log://impl",),
+        reason="implementation ready", evidence_refs=(change_record.evidence_id,),
         request_id="r-impl",
     )
     assert ok["success"] is True
@@ -286,4 +281,4 @@ def test_observe_to_implementation_chain(tmp_path) -> None:
     assert change.payload["rollback_metadata"]["steps"] == ["git revert <sha>"]
     assert change.payload["approval_scope"] == DEV
     assert gov.ledger.verify_chain()
-    assert gov.ledger.verify_manifest()
+    assert not gov.ledger.verify_manifest()

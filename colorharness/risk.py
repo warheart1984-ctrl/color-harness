@@ -29,9 +29,11 @@ ACTION_RISK: dict[str, RiskClass] = {
     "credential_rotation": RiskClass.RED,
     "security_control_change": RiskClass.RED,
     "scope_expansion": RiskClass.ORANGE,
+    "policy_exception": RiskClass.ORANGE,
     "staging_deploy": RiskClass.ORANGE,
     "production_config_drift": RiskClass.ORANGE,
     "ci_change": RiskClass.YELLOW,
+    "plan_approval": RiskClass.YELLOW,
     "staging_change": RiskClass.YELLOW,
     "branch_write": RiskClass.YELLOW,
     "config_write": RiskClass.YELLOW,
@@ -47,7 +49,10 @@ def normalize(risk: RiskClass | str) -> RiskClass:
 
 
 def classify_action(action: str) -> RiskClass:
-    return ACTION_RISK.get(action.strip().lower(), RiskClass.YELLOW)
+    normalized = action.strip().lower()
+    if normalized not in ACTION_RISK:
+        return RiskClass.RED
+    return ACTION_RISK[normalized]
 
 
 def rank(risk: RiskClass) -> int:

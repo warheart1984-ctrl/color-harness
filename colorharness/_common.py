@@ -95,7 +95,9 @@ RESOLUTION_TRIGGERS: frozenset[Trigger] = frozenset({Trigger.UNBLOCK, Trigger.DE
 EVIDENCE_GATED_TRIGGERS: dict[Trigger, str] = {
     Trigger.OBSERVATIONS_READY: "observation",
     Trigger.DIAGNOSIS_ACCEPTED: "diagnosis",
+    Trigger.PLAN_APPROVED: "approval",
     Trigger.IMPLEMENTATION_READY: "change",
+    Trigger.RELEASE_APPROVED: "approval",
 }
 
 ABSORBING: frozenset[TaskState] = frozenset({TaskState.CLOSED, TaskState.ROLLED_BACK})
@@ -137,7 +139,7 @@ STATE_OWNERS: dict[TaskState, frozenset[str]] = {
     TaskState.PLAN: frozenset({"gold", "coordinator"}),
     TaskState.BUILD: frozenset({"silver"}),
     TaskState.VERIFY: frozenset({"yellow"}),
-    TaskState.APPROVE: frozenset({"yellow", "coordinator"}),
+    TaskState.APPROVE: frozenset({"coordinator"}),
     TaskState.RELEASE: frozenset({"green"}),
     TaskState.MONITOR: frozenset({"green", "blue"}),
     TaskState.CLOSED: frozenset({"coordinator"}),

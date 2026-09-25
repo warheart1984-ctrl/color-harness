@@ -38,15 +38,16 @@ def make_governed(tmp_path, registry=None) -> tuple[Coordinator, WhiteTeam, Team
 
 
 SCOPE = {"environments": ["staging"], "resources": ["pipeline:build"]}
+SCOPE = {"ci_cd": {"environments": ["staging"]}, "resources": ["pipeline:build"]}
 
 
 def _drive_to(c: Coordinator, task_id: str, wanted: TaskState) -> None:
     for trigger, actor, reason in FULL_PATH:
         if TaskState(c.get_task(task_id)["state"]) == wanted:
             return
-        _record_gate_evidence(c, task_id, trigger)
+        refs = _record_gate_evidence(c, task_id, trigger)
         c.apply_transition(task_id, trigger, actor=actor, reason=reason,
-                           evidence_refs=(f"log://{reason}",), request_id=f"rid-{reason}")
+                           evidence_refs=refs or (f"log://{reason}",), request_id=f"rid-{reason}")
 
 
 # ---------------------------------------------------------------------------
@@ -96,8 +97,12 @@ def test_scope_expansion_with_approval_succeeds(tmp_path) -> None:
     approval = gov.record_approval(
         task["task_id"],
         gated_action="scope_expansion",
-        approver="white.sys-1",
-        scope={"environments": ["staging", "production"], "resources": ["pipeline:build"]},
+        approver="black.diag-1",
+        approver_role="security-lead",
+        scope={"ci_cd": {"environments": ["staging"]},
+               "environments": ["staging", "production"],
+               "resources": ["pipeline:build"]},
+        author="gold.plan-1",
     )
     new = gov.expand_scope(
         task["task_id"],
@@ -106,7 +111,8 @@ def test_scope_expansion_with_approval_succeeds(tmp_path) -> None:
         approval_id=approval.approval_id,
     )
     assert new.version == 2
-    assert set(new.scope["environments"]) == {"staging", "production"}
+    assert (set(new.scope["ci_cd"]["environments"])
+            | set(new.scope["environments"])) == {"staging", "production"}
 
 
 # ---------------------------------------------------------------------------
@@ -126,10 +132,14 @@ def test_no_self_approval(tmp_path) -> None:
 def test_approval_validity_scope_and_expiry(tmp_path) -> None:
     c, gov, _ = make_governed(tmp_path)
     task = c.create_task(title="t", scope=SCOPE)
-    approval = gov.record_approval(
+    platform = gov.record_approval(
         task["task_id"], gated_action="release", approver="white.sys-1",
-        scope=SCOPE, ttl_seconds=3600,
+        scope=SCOPE, ttl_seconds=3600, author="silver.build-1", approver_role="platform-owner",
     )
+    security = gov.record_approval(task["task_id"], gated_action="release",
+                                   approver="black.diag-1", scope=SCOPE,
+                                   author="silver.build-1", approver_role="security-lead")
+    approval = platform
     assert gov.approval_valid(approval.approval_id, task["task_id"], "release", SCOPE)
     assert not gov.approval_valid(approval.approval_id, task["task_id"], "rollback", SCOPE)
     assert not gov.approval_valid(approval.approval_id, task["task_id"], "release",
@@ -144,7 +154,7 @@ def test_expired_approval_invalid(tmp_path) -> None:
     task = c.create_task(title="t", scope=SCOPE)
     expired = gov.record_approval(
         task["task_id"], gated_action="release", approver="white.sys-1",
-        scope=SCOPE, ttl_seconds=-60,
+        scope=SCOPE, ttl_seconds=-60, author="silver.build-1",
     )
     assert not gov.approval_valid(expired.approval_id, task["task_id"], "release", SCOPE)
 
@@ -153,7 +163,7 @@ def test_revoked_approval_invalid(tmp_path) -> None:
     c, gov, _ = make_governed(tmp_path)
     task = c.create_task(title="t", scope=SCOPE)
     approval = gov.record_approval(
-        task["task_id"], gated_action="release", approver="white.sys-1", scope=SCOPE,
+        task["task_id"], gated_action="release", approver="white.sys-1", scope=SCOPE, author="silver.build-1",
     )
     gov.revoke_approval(approval.approval_id, actor="white.sys-1", reason="scope drift")
     assert not gov.has_valid_approval(task["task_id"], "release", requested_scope=SCOPE)
@@ -176,11 +186,14 @@ def test_missing_approval_blocks_release(tmp_path) -> None:
     assert c.get_task(task["task_id"])["state"] == TaskState.APPROVE.value
 
     gov.record_approval(
-        task["task_id"], gated_action="release", approver="white.sys-1", scope=SCOPE,
+        task["task_id"], gated_action="release", approver="white.sys-1", scope=SCOPE, author="silver.build-1",
+        approver_role="platform-owner",
     )
+    security = gov.record_approval(task["task_id"], gated_action="release", approver="black.diag-1",
+                                   scope=SCOPE, author="silver.build-1", approver_role="security-lead")
     ok = c.apply_transition(
         task["task_id"], Trigger.RELEASE_APPROVED, actor=Coordinator.SYSTEM_AGENT,
-        reason="release", evidence_refs=("log://rel",), request_id="rid-rel-apr",
+        reason="release", evidence_refs=(security.evidence_id,), request_id="rid-rel-apr",
     )
     assert ok["success"] is True
     assert c.get_task(task["task_id"])["state"] == TaskState.RELEASE.value
@@ -190,18 +203,20 @@ def test_rollback_requires_approval(tmp_path) -> None:
     c, gov, _ = make_governed(tmp_path)
     task = c.create_task(title="t", scope=SCOPE)
     _drive_to(c, task["task_id"], TaskState.APPROVE)
-    gov.record_approval(task["task_id"], gated_action="release", approver="white.sys-1", scope=SCOPE)
+    gov.record_approval(task["task_id"], gated_action="release", approver="white.sys-1", scope=SCOPE, author="silver.build-1", approver_role="platform-owner")
+    rel_security = gov.record_approval(task["task_id"], gated_action="release", approver="black.diag-1", scope=SCOPE, author="silver.build-1", approver_role="security-lead")
     c.apply_transition(task["task_id"], Trigger.RELEASE_APPROVED, actor=Coordinator.SYSTEM_AGENT,
-                       reason="release", evidence_refs=("log://rel",), request_id="rid-rel")
+                       reason="release", evidence_refs=(rel_security.evidence_id,), request_id="rid-rel")
     blocked = c.apply_transition(
         task["task_id"], Trigger.ROLLBACK_INITIATED, actor="green.rel-1",
         reason="rollback", evidence_refs=("log://rb",), request_id="rid-rb-no-apr",
     )
     assert blocked["error"]["code"] == RejectionCode.APPROVAL_MISSING.value
-    gov.record_approval(task["task_id"], gated_action="rollback", approver="white.sys-1", scope=SCOPE)
+    gov.record_approval(task["task_id"], gated_action="rollback", approver="white.sys-1", scope=SCOPE, author="green.rel-1", approver_role="platform-owner")
+    rb_security = gov.record_approval(task["task_id"], gated_action="rollback", approver="black.diag-1", scope=SCOPE, author="green.rel-1", approver_role="security-lead")
     ok = c.apply_transition(
         task["task_id"], Trigger.ROLLBACK_INITIATED, actor="green.rel-1",
-        reason="rollback", evidence_refs=("log://rb",), request_id="rid-rb-apr",
+        reason="rollback", evidence_refs=(rb_security.evidence_id,), request_id="rid-rb-apr",
     )
     assert ok["success"] is True
     assert c.get_task(task["task_id"])["state"] == TaskState.ROLLED_BACK.value
@@ -224,10 +239,10 @@ def test_pause_blocks_progression_until_resume(tmp_path) -> None:
     assert c.get_task(task["task_id"])["state"] == TaskState.BUILD.value
 
     gov.resume(task["task_id"], actor="white.sys-1", reason="resolved")
-    _record_gate_evidence(c, task["task_id"], Trigger.IMPLEMENTATION_READY)
+    change_refs = _record_gate_evidence(c, task["task_id"], Trigger.IMPLEMENTATION_READY)
     ok = c.apply_transition(
         task["task_id"], Trigger.IMPLEMENTATION_READY, actor="silver.build-1",
-        reason="ready", evidence_refs=("log://ready",), request_id="rid-ready-ok",
+        reason="ready", evidence_refs=change_refs, request_id="rid-ready-ok",
     )
     assert ok["success"] is True
     assert c.get_task(task["task_id"])["state"] == TaskState.VERIFY.value
@@ -274,7 +289,7 @@ def test_incomplete_evidence_cannot_be_marked_complete(tmp_path) -> None:
         draft.evidence_id,
         extra_payload={
             "approver": "white.sys-1", "scope": SCOPE, "expiry": "2026-09-19T00:00:00.000Z",
-            "gated_action": "release", "decision_id": "dec-1",
+            "gated_action": "release", "decision_id": "dec-1", "approval_id": "apr-test",
         },
         actor="white.sys-1", team="white", source="test://complete",
     )
@@ -315,7 +330,6 @@ def test_ledger_hash_chain_detects_tampering(tmp_path) -> None:
 def test_transitions_land_in_ledger(tmp_path) -> None:
     c, gov, _ = make_governed(tmp_path)
     task = c.create_task(title="t", scope=SCOPE)
-    gov.record_approval(task["task_id"], gated_action="release", approver="white.sys-1", scope=SCOPE)
     drive_full_path(c, task["task_id"])
     transitions = [r for r in gov.ledger.records if r.record_type == "transition"]
     assert len(transitions) == len(FULL_PATH)
@@ -326,7 +340,7 @@ def test_audit_output_is_append_only(tmp_path) -> None:
     c, gov, _ = make_governed(tmp_path)
     task = c.create_task(title="t", scope=SCOPE)
     _drive_to(c, task["task_id"], TaskState.APPROVE)
-    gov.record_approval(task["task_id"], gated_action="release", approver="white.sys-1", scope=SCOPE)
+    gov.record_approval(task["task_id"], gated_action="release", approver="white.sys-1", scope=SCOPE, author="silver.build-1")
     audit_path = str(tmp_path / "audit.jsonl")
     gov.write_audit(audit_path)
     with open(audit_path, encoding="utf-8") as fh:
@@ -343,7 +357,10 @@ def test_restart_rebuilds_governance_state(tmp_path) -> None:
     _drive_to(c1, task["task_id"], TaskState.APPROVE)
     approval = gov1.record_approval(
         task["task_id"], gated_action="release", approver="white.sys-1", scope=SCOPE,
+        author="silver.build-1", approver_role="platform-owner",
     )
+    gov1.record_approval(task["task_id"], gated_action="release", approver="black.diag-1",
+                         scope=SCOPE, author="silver.build-1", approver_role="security-lead")
     gov1.pause(task["task_id"], actor="white.sys-1", reason="review")
 
     ledger_path = str(tmp_path / "ledger.jsonl")

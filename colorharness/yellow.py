@@ -86,9 +86,7 @@ class YellowTeam:
         self.registry = registry
 
     def _check_actor(self, actor: str) -> None:
-        if self.registry is None:
-            return
-        if not self.registry.is_registered(actor):
+        if self.registry is None or not self.registry.is_registered(actor):
             raise YellowUnauthorizedActorError(f"actor '{actor}' is not registered")
         if self.registry.team_of(actor) != "yellow":
             raise YellowUnauthorizedActorError(
@@ -124,7 +122,9 @@ class YellowTeam:
     def forbid_self_approval(self, actor: str) -> None:
         """Yellow must never approve its own implementation. Refuse any actor
         that could hold an approval role toward its own verified work."""
-        if self.registry is not None and self.registry.has_role(actor, "ci-operator"):
+        if self.registry is None or not self.registry.is_registered(actor):
+            raise YellowUnauthorizedActorError(f"actor '{actor}' is not registered")
+        if self.registry.has_role(actor, "ci-operator"):
             raise SelfApprovalError(
                 f"yellow agent '{actor}' cannot approve its own implementation"
             )
