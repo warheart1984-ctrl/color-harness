@@ -90,7 +90,7 @@ def _record_gate_evidence(c: Coordinator, task_id: str, trigger: Trigger) -> tup
             if r.task_id == task_id and r.record_type == "approval"
             and r.payload.get("gated_action") == "plan_approval"
         )
-        change = SilverTeam(registry=c.registry).present_change(
+        change = SilverTeam(registry=c.registry, governance=c.governance).present_change(
             task_id=task_id, actor="silver.build-1",
             change_type="branch", branch="isolated/helper",
             files=("deploy.yaml",), diff_summary="helper implementation",

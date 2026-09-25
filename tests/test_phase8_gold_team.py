@@ -309,7 +309,7 @@ def test_gold_supports_finding_remediation_chain(tmp_path) -> None:
     plan = gov.record_approval("task-1", gated_action="plan_approval",
                                approver="white.sys-1", scope={"repo": "demo"},
                                author="silver.build-1", approver_role="ci-operator")
-    change = SilverTeam(registry=reg).present_change(
+    change = SilverTeam(registry=reg, governance=gov).present_change(
         task_id="task-1", actor="silver.build-1",
         change_type="branch", branch="isolated/no-tokens",
         files=("tracing.cfg",), diff_summary="redact tokens",
